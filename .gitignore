@@ -4,3 +4,13 @@ __pycache__/
 .ipynb_checkpoints/
 implementation/__pycache__/
 implementation/__marimo__/session/
+
+# Local assignment/reference files that are not part of the final Cluster 2 code repo.
+/*.pdf
+/Cluster 2.png
+/g0r72a_project_20252026 (2)
+/implementation/block 8.py
+/implementation/block 9.py
+/implementation/cluster_2_board_visits_marimo.py
+/implementation/fishing full.py
+/implementation/new_marimo_notebook.py
