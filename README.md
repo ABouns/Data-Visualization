@@ -4,6 +4,7 @@ This repository contains the final marimo SVG implementation for Cluster 2 of th
 
 ## Files
 
+- `implementation/graph2.py` - original Graph 2 preprocessing notebook copied unchanged from `tvakul/dataviz1`.
 - `implementation/cluster_2_svg_blocks_marimo.py` - final interactive marimo notebook.
 - `implementation/cluster_2_svg_blocks_marimo.html` - exported HTML version of the notebook.
 - `implementation/data/places_edited.json` - Graph 2 prepared place zones.
