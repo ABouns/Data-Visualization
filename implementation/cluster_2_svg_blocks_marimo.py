@@ -10,8 +10,12 @@ def _():
     import pandas as pd
     import numpy as np
     from sklearn.neighbors import BallTree
+    import svg
+    import math
+    import json
+    import os
 
-    return BallTree, mo, np, pd
+    return BallTree, json, math, mo, np, pd, svg
 
 
 @app.cell
@@ -19,49 +23,55 @@ def _(BallTree, np, pd):
 
     def classify_weighted_knn(df, k=5, max_radius_km=1.0, epsilon=0.001):
         # 1. Split data
-        df_comm = df[df['zone'].isin(['commercial', 'residential'])].reset_index(drop=True)
-        df_targets = df[df['zone'].isin(['tourism', 'industrial'])].reset_index(drop=True)
-    
+        df_comm = df[df["zone"].isin(["commercial", "residential"])].reset_index(drop=True)
+        df_targets = df[df["zone"].isin(["tourism", "industrial"])].reset_index(drop=True)
+
         if df_comm.empty or df_targets.empty:
             return pd.DataFrame()
 
         # 2. Build Tree and Query
-        comm_rad = np.radians(df_comm[['lat', 'lon']])
-        target_rad = np.radians(df_targets[['lat', 'lon']])
-        tree = BallTree(target_rad, metric='haversine')
-    
+        comm_rad = np.radians(df_comm[["lat", "lon"]])
+        target_rad = np.radians(df_targets[["lat", "lon"]])
+        tree = BallTree(target_rad, metric="haversine")
+
         earth_radius_km = 6371.0
         radius_rad = max_radius_km / earth_radius_km
         distances, indices = tree.query(comm_rad, k=k, return_distance=True)
-    
+
         # 3. Collect Valid Neighbors and Calculate Inverse Distance Weight
         results = []
         for i, (dist_array, idx_array) in enumerate(zip(distances, indices)):
             for dist, idx in zip(dist_array, idx_array):
                 if dist <= radius_rad:
                     dist_km = dist * earth_radius_km
-                    weight = 1.0 / (dist_km + epsilon) # Add epsilon to avoid zero division
-                
-                    results.append({
-                        'commercial_id': df_comm.iloc[i]['place_id'],
-                        'target_zone': df_targets.iloc[idx]['zone'],
-                        'weight': weight
-                    })
-                
+                    weight = 1.0 / (dist_km + epsilon)  # Add epsilon to avoid zero division
+
+                    results.append(
+                        {
+                            "commercial_id": df_comm.iloc[i]["place_id"],
+                            "target_zone": df_targets.iloc[idx]["zone"],
+                            "weight": weight,
+                        }
+                    )
+
         df_neighbors = pd.DataFrame(results)
         if df_neighbors.empty:
-            return pd.DataFrame(columns=['commercial_id', 'predicted_zone', 'weighted_score'])
+            return pd.DataFrame(columns=["commercial_id", "predicted_zone", "weighted_score"])
 
         # 4. Sum the weights grouped by commercial_id and target_zone
-        weighted_scores = (df_neighbors.groupby(['commercial_id', 'target_zone'])['weight']
-                                       .sum()
-                                       .reset_index(name='weighted_score'))
-    
+        weighted_scores = (
+            df_neighbors.groupby(["commercial_id", "target_zone"])["weight"]
+            .sum()
+            .reset_index(name="weighted_score")
+        )
+
         # 5. Sort by highest weighted score to determine majority
-        df_majority = (weighted_scores.sort_values(['commercial_id', 'weighted_score'], ascending=[True, False])
-                                      .drop_duplicates(subset=['commercial_id'], keep='first')
-                                      .rename(columns={'target_zone': 'predicted_zone'}))
-                              
+        df_majority = (
+            weighted_scores.sort_values(["commercial_id", "weighted_score"], ascending=[True, False])
+            .drop_duplicates(subset=["commercial_id"], keep="first")
+            .rename(columns={"target_zone": "predicted_zone"})
+        )
+
         return df_majority.reset_index(drop=True)
 
     return (classify_weighted_knn,)
@@ -70,7 +80,7 @@ def _(BallTree, np, pd):
 @app.cell
 def _(mo, pd):
     # places_edited = duckdb.sql("""
-    #     select place_id, 
+    #     select place_id,
     #            case when zone = 'residential' and name = 'Paakland Elementary' then 'tourism'
     #                 when zone = 'residential' and name in ('Waveside Townhomes', 'Tidewater Flats') then 'industrial'
     #                 when name = 'Tropics Environmental Hub' then 'tourism'
@@ -83,7 +93,9 @@ def _(mo, pd):
     try:
         places_edited = pd.read_json(str(mo.notebook_location() / "data" / "places_edited.json"))
     except:
-        places_edited = pd.read_json("https://raw.githubusercontent.com/tvakul/dataviz1/refs/heads/main/data/places_edited.json")
+        places_edited = pd.read_json(
+            "https://raw.githubusercontent.com/tvakul/dataviz1/refs/heads/main/data/places_edited.json"
+        )
     places_edited
     return (places_edited,)
 
@@ -96,11 +108,17 @@ def _(
     pd,
     places_edited,
 ):
-    remapped_location = pd.concat([places_edited.loc[places_edited['zone'].isin(['industrial', 'tourism'])],
-    classify_weighted_knn(places_edited, max_radius_km=knn_dist_slider.value, k=knn_num_slider.value).rename(
-        columns={'predicted_zone': 'zone', 'commercial_id': 'place_id'}
-    )
-    ], ignore_index=True).drop_duplicates(subset=['place_id'], keep='first')[['place_id', 'zone']]
+    remapped_location = pd.concat(
+        [
+            places_edited.loc[places_edited["zone"].isin(["industrial", "tourism"])],
+            classify_weighted_knn(
+                places_edited,
+                max_radius_km=knn_dist_slider.value,
+                k=knn_num_slider.value,
+            ).rename(columns={"predicted_zone": "zone", "commercial_id": "place_id"}),
+        ],
+        ignore_index=True,
+    ).drop_duplicates(subset=["place_id"], keep="first")[["place_id", "zone"]]
 
     remapped_location
     return (remapped_location,)
@@ -109,8 +127,8 @@ def _(
 @app.cell(hide_code=True)
 def _(mo, pd):
     # time_trip_spend = duckdb.sql("\""
-    #     select a.*, b.*, c.*, d.people_id 
-    #     from 
+    #     select a.*, b.*, c.*, d.people_id
+    #     from
     #       database_jour.trips a,
     #      database_jour.trip_places b,
     #         database_jour.places c,
@@ -159,7 +177,6 @@ def _(mo, pd):
     # time_trip_spend = time_trip_spend.drop(columns=["time_prev", "time_lead", "half_before", "half_after"])
     # time_trip_spend[["trip_id", "people_id", "place_id", "name", "time", "time_spend", "zone", "zone_detail"]]
 
-
     _dtypes_tts = {
         "trip_id": "object",
         "date": "object",
@@ -177,548 +194,1270 @@ def _(mo, pd):
         "people_id": "object",
         "index": "int64",
         "index_lead": "int64",
-        "time_spend": "timedelta64[ns]"
+        "time_spend": "timedelta64[ns]",
     }
     try:
-        time_trip_spend = pd.read_json(str(mo.notebook_location() / "data" / "time_trip_spend.json"), dtype=_dtypes_tts)
+        time_trip_spend = pd.read_json(
+            str(mo.notebook_location() / "data" / "time_trip_spend.json"),
+            dtype=_dtypes_tts,
+        )
     except:
-        time_trip_spend = pd.read_json("https://raw.githubusercontent.com/tvakul/dataviz1/refs/heads/main/data/time_trip_spend.json", dtype=_dtypes_tts)
+        time_trip_spend = pd.read_json(
+            "https://raw.githubusercontent.com/tvakul/dataviz1/refs/heads/main/data/time_trip_spend.json",
+            dtype=_dtypes_tts,
+        )
     time_trip_spend
     return (time_trip_spend,)
 
 
 @app.cell
-def _(pd, remapped_location, time_trip_spend):
-    time_location_remapped = pd.merge(time_trip_spend[["trip_id", "date", "people_id", "place_id", "name", "time", "time_spend", "zone", 'lat', 'lon']], remapped_location.rename(columns={"zone": "zone_remapped"}),
-                on="place_id", how="left").fillna({"zone_remapped": "other"})
+def _(pd, remapped_location, sel_end, sel_start, time_trip_spend):
+    _col = pd.to_datetime(time_trip_spend["date"])
+    _mask = (_col >= sel_start) & (_col <= sel_end)
+    filtered_tts = time_trip_spend[_mask]
+
+    time_location_remapped = pd.merge(
+        filtered_tts[
+            [
+                "trip_id",
+                "date",
+                "people_id",
+                "place_id",
+                "name",
+                "time",
+                "time_spend",
+                "zone",
+                "lat",
+                "lon",
+            ]
+        ],
+        remapped_location.rename(columns={"zone": "zone_remapped"}),
+        on="place_id",
+        how="left",
+    ).fillna({"zone_remapped": "other"})
     time_location_remapped
     return (time_location_remapped,)
 
 
 @app.cell(hide_code=True)
 def _(time_location_remapped):
-    # Group by people_id and zone_remapped to calculate total visits by trip_id and place_id
     _tmp = time_location_remapped.copy()
-    _tmp['visit_id'] = _tmp['trip_id'].astype(str) + '_' + _tmp['place_id'].astype(str) + '_' + _tmp['place_id'].astype(str)
-    people_zone_summary = _tmp.groupby(['people_id', 'zone_remapped']).agg(
-        total_visits=('visit_id', 'nunique'),   
-    ).reset_index()
+    _tmp["visit_id"] = (
+        _tmp["trip_id"].astype(str)
+        + "_"
+        + _tmp["place_id"].astype(str)
+        + "_"
+        + _tmp["place_id"].astype(str)
+    )
+    people_zone_summary = (
+        _tmp.groupby(["people_id", "zone_remapped"])
+        .agg(total_visits=("visit_id", "nunique"))
+        .reset_index()
+    )
 
-    people_zone_summary = people_zone_summary[people_zone_summary['zone_remapped'].isin(['industrial', 'tourism'])]
+    people_zone_summary = people_zone_summary[
+        people_zone_summary["zone_remapped"].isin(["industrial", "tourism"])
+    ]
 
-
-    people_zone_summary_delta = people_zone_summary.pivot(index='people_id', columns='zone_remapped', values='total_visits').fillna(0).reset_index()
-    people_zone_summary_delta['delta'] = people_zone_summary_delta['industrial'] - people_zone_summary_delta['tourism']
-    people_zone_summary_delta.sort_values('delta', ascending=False)
+    people_zone_summary_delta = (
+        people_zone_summary.pivot(index="people_id", columns="zone_remapped", values="total_visits")
+        .fillna(0)
+        .reset_index()
+    )
+    people_zone_summary_delta["delta"] = (
+        people_zone_summary_delta["industrial"] - people_zone_summary_delta["tourism"]
+    )
+    people_zone_summary_delta.sort_values("delta", ascending=False)
     return (people_zone_summary_delta,)
 
 
 @app.cell
 def _(pd, time_location_remapped):
-    people_timespend_summary = time_location_remapped.groupby(["people_id", "zone_remapped"]).agg({"time_spend": "sum", "trip_id": "nunique"}).reset_index()
+    people_timespend_summary = (
+        time_location_remapped.groupby(["people_id", "zone_remapped"])
+        .agg({"time_spend": "sum", "trip_id": "nunique"})
+        .reset_index()
+    )
 
-    # Filter out zone_remapped = 'other'
-    people_timespend_summary_filtered = people_timespend_summary[people_timespend_summary['zone_remapped'].isin(['industrial', 'tourism'])].copy()
+    people_timespend_summary_filtered = people_timespend_summary[
+        people_timespend_summary["zone_remapped"].isin(["industrial", "tourism"])
+    ].copy()
 
-    # Get the delta time spend between different zones for each people_id
-    delta_time_spend = people_timespend_summary_filtered.pivot(index='people_id', columns='zone_remapped', values='time_spend').fillna(pd.Timedelta(0))
-    delta_time_spend['delta'] = delta_time_spend.get('industrial', pd.Timedelta(0)) - delta_time_spend.get('tourism', pd.Timedelta(0))
+    delta_time_spend = (
+        people_timespend_summary_filtered.pivot(
+            index="people_id", columns="zone_remapped", values="time_spend"
+        ).fillna(pd.Timedelta(0))
+    )
+    delta_time_spend["delta"] = delta_time_spend.get("industrial", pd.Timedelta(0)) - delta_time_spend.get(
+        "tourism", pd.Timedelta(0)
+    )
 
     delta_time_spend
-    return (people_timespend_summary_filtered,)
+    return (delta_time_spend,)
 
 
 @app.cell
-def _(mo):
-    knn_dist_slider = mo.ui.slider(start=0, stop=5, step=0.1, value = 1.5, show_value=True)
-    knn_num_slider = mo.ui.slider(start=0, stop=10, step=1, value = 5, show_value=True)
-    mode_dropdown = mo.ui.dropdown(options=['time_spend', 'visits'], value='visits')
-    mo.vstack([
-        mo.hstack([
-            mo.md("Remapper: max distance limit for reference (in km)"),
-            knn_dist_slider
-        ], align="start", justify="start"),
-        mo.hstack([
-            mo.md("Remapper: number of nearnest reference locations"),
-            knn_num_slider
-        ], align="start", justify="start") ,
-        mo.hstack([
-            mo.md("Comparison mode"),
-            mode_dropdown,
-        ], align="start", justify="start")     
-    ])
+def _(mo, pd, time_trip_spend):
+    unique_dates = pd.to_datetime(time_trip_spend["date"]).sort_values().unique()
+    num_days = len(unique_dates)
+
+    knn_dist_slider = mo.ui.slider(start=0, stop=5, step=0.1, value=1.5, show_value=True)
+    knn_num_slider = mo.ui.slider(start=0, stop=10, step=1, value=5, show_value=True)
+    mode_dropdown = mo.ui.dropdown(options=["time_spend", "visits"], value="visits")
+    show_others = mo.ui.checkbox(value=False, label="Show 'Others'")
+
+    date_slider = mo.ui.range_slider(
+        start=0,
+        stop=num_days - 1,
+        step=1,
+        value=(0, num_days - 1),
+        label="Filter Date Range",
+    )
+
+    return (
+        date_slider,
+        knn_dist_slider,
+        knn_num_slider,
+        mode_dropdown,
+        show_others,
+        unique_dates,
+    )
 
 
-    return knn_dist_slider, knn_num_slider, mode_dropdown
+@app.cell
+def _(date_slider, unique_dates):
+    sel_start = unique_dates[int(date_slider.value[0])]
+    sel_end = unique_dates[int(date_slider.value[1])]
+    return sel_end, sel_start
 
 
 @app.cell
 def _(time_location_remapped):
-    time_location_remappd2 = time_location_remapped.copy();
-    time_location_remappd2.groupby(['people_id', 'lat', 'lon', 'trip_id']).agg({'time_spend': 'sum'}).reset_index().rename(columns={'place_id': 'time_spend'})
+    time_location_remappd2 = time_location_remapped.copy()
+    time_location_remappd2.groupby(["people_id", "lat", "lon", "trip_id"]).agg({"time_spend": "sum"}).reset_index().rename(
+        columns={"place_id": "time_spend"}
+    )
     return
 
 
 @app.cell
 def _(
+    delta_time_spend,
     mode_dropdown,
-    people_timespend_summary_filtered,
     people_zone_summary_delta,
     time_location_remapped,
 ):
-    if mode_dropdown.value == 'visits':
+    if mode_dropdown.value == "visits":
         graph_2_1_data = people_zone_summary_delta
-        graph_2_2_data = time_location_remapped.groupby(['people_id', 'date', 'zone_remapped', 'trip_id']).agg({'place_id': 'count'}).reset_index().rename(columns={'place_id': 'num_visits'})
-    else:
-        graph_2_1_data = people_timespend_summary_filtered
-        graph_2_2_data = time_location_remapped.groupby(['people_id', 'date', 'zone_remapped', 'trip_id']).agg({'time_spend': 'sum'}).reset_index().rename(columns={'place_id': 'time_spend'})
-    return
-
-
-@app.cell
-def _(graph_2_3_data):
-    graph_2_3_data
-    return
-
-# Interactive Cluster 2 SVG cells build on the exact Graph 2 preprocessing above.
-
-
-@app.cell
-def _(time_location_remapped):
-    graph_2_3_data = (
-        time_location_remapped.copy()
-        .groupby(['people_id', 'lat', 'lon', 'trip_id'])
-        .agg({'time_spend': 'sum'})
-        .reset_index()
-    )
-    return (graph_2_3_data,)
-
-
-@app.cell
-def _():
-    import json
-    import math
-    from collections import defaultdict
-    from html import escape
-    from pathlib import Path
-
-    return Path, defaultdict, escape, json, math
-
-
-@app.cell
-def _(math):
-    CATEGORY_ORDER = ("Fishing", "Tourism", "Hybrid", "Neutral")
-
-    CATEGORY_COLORS = {
-        "Fishing": "#1f5aa6",
-        "Tourism": "#d17a22",
-        "Hybrid": "#6f6f6f",
-        "Neutral": "#cfcfcf",
-    }
-
-    CATEGORY_STROKES = {
-        "Fishing": "#123d73",
-        "Tourism": "#9b5515",
-        "Hybrid": "#4d4d4d",
-        "Neutral": "#8f8f8f",
-    }
-
-    ZONE_COLORS = {
-        "industrial": "#355c7d",
-        "tourism": "#f08a5d",
-        "government": "#7b6d8d",
-        "residential": "#7fb069",
-        "commercial": "#e9c46a",
-        "connector": "#8ecae6",
-        "other": "#d9d9d9",
-        "unknown": "#d9d9d9",
-    }
-
-    def category_from_zone(zone):
-        zone = str(zone or "").strip().lower()
-        if zone == "tourism":
-            return "Tourism"
-        if zone == "industrial":
-            return "Fishing"
-        return "Neutral"
-
-    def summarize_category_hours(visit_rows):
-        totals = {label: 0.0 for label in CATEGORY_ORDER}
-        for row in visit_rows:
-            category = str(row["category"])
-            totals[category] = totals.get(category, 0.0) + float(row["duration_hours"])
-        return totals
-
-    def dominant_time_category(category_hours):
-        focus = {
-            label: hours
-            for label, hours in category_hours.items()
-            if label in {"Fishing", "Tourism", "Hybrid"} and hours > 0
-        }
-        if focus:
-            ordered = sorted(focus.items(), key=lambda item: (-item[1], item[0]))
-            if len(ordered) > 1 and math.isclose(ordered[0][1], ordered[1][1]):
-                return "Hybrid"
-            return ordered[0][0]
-        return "Neutral"
-
-    return (
-        CATEGORY_COLORS,
-        CATEGORY_ORDER,
-        CATEGORY_STROKES,
-        ZONE_COLORS,
-        category_from_zone,
-        dominant_time_category,
-        summarize_category_hours,
-    )
-
-
-@app.cell
-def _(category_from_zone, pd, time_location_remapped):
-    def clean(value, fallback=""):
-        if pd.isna(value):
-            return fallback
-        return value
-
-    def to_hours(value):
-        if pd.isna(value):
-            return 0.0
-        if hasattr(value, "total_seconds"):
-            return float(value.total_seconds()) / 3600.0
-        return float(pd.to_timedelta(value).total_seconds()) / 3600.0
-
-    working = time_location_remapped.copy()
-    working["zone_remapped"] = working["zone_remapped"].fillna("other")
-
-    place_rows = (
-        working.sort_values(["name", "place_id"])
-        .drop_duplicates(subset=["place_id"], keep="first")
-        .to_dict("records")
-    )
-    places = []
-    for row in place_rows:
-        zone = str(clean(row.get("zone"), "unknown")).strip().lower()
-        zone_remapped = str(clean(row.get("zone_remapped"), "other")).strip().lower()
-        places.append(
-            {
-                "place_id": str(row["place_id"]),
-                "name": str(clean(row.get("name"), row["place_id"])),
-                "lat": float(row["lat"]),
-                "lon": float(row["lon"]),
-                "x": float(row["lat"]),
-                "y": float(row["lon"]),
-                "zone": zone,
-                "zone_remapped": zone_remapped,
-                "zone_detail": "",
-                "category": category_from_zone(zone_remapped),
-                "remap_method": "Graph 2 remapped_location merge",
-                "remap_score": None,
-            }
+        graph_2_2_data = (
+            time_location_remapped.groupby(
+                ["people_id", "date", "zone_remapped", "trip_id", "place_id"]
+            )
+            .size()
+            .reset_index(name="num_visits")
         )
-
-    visit_rows = []
-    for row in working.to_dict("records"):
-        zone = str(clean(row.get("zone"), "unknown")).strip().lower()
-        zone_remapped = str(clean(row.get("zone_remapped"), "other")).strip().lower()
-        time_value = clean(row.get("time"), None)
-        if time_value is None:
-            start_dt = pd.to_datetime(row.get("date")).to_pydatetime()
+        graph_2_2_data["time_spend"] = 0
+    else:
+        graph_2_1_data = delta_time_spend.reset_index()
+        temp_df = time_location_remapped.copy()
+        if temp_df["time_spend"].dtype == "timedelta64[ns]":
+            temp_df["time_hr"] = temp_df["time_spend"].dt.total_seconds() / 3600
         else:
-            start_dt = pd.to_datetime(time_value).to_pydatetime()
-        date_value = clean(row.get("date"), str(start_dt.date()))
-        visit_rows.append(
-            {
-                "source": "Graph 2 preprocessing",
-                "trip_id": str(row["trip_id"]),
-                "date": str(date_value),
-                "start_dt": start_dt,
-                "end_dt": start_dt,
-                "member": str(row.get("people_id") or "Unknown"),
-                "place_id": str(row["place_id"]),
-                "name": str(clean(row.get("name"), row["place_id"])),
-                "x": float(row["lat"]),
-                "y": float(row["lon"]),
-                "zone": zone,
-                "zone_remapped": zone_remapped,
-                "zone_detail": "",
-                "category": category_from_zone(zone_remapped),
-                "remap_method": "Graph 2 remapped_location merge",
-                "remap_score": None,
-                "duration_hours": to_hours(row.get("time_spend")),
-            }
+            temp_df["time_hr"] = temp_df["time_spend"]
+
+        graph_2_2_data = (
+            temp_df.groupby(["people_id", "date", "zone_remapped", "trip_id", "place_id"])["time_hr"]
+            .sum()
+            .reset_index(name="time_spend")
         )
-
-    c2_selected_source = "Graph 2 preprocessing"
-    source_data = {
-        c2_selected_source: {
-            "name": c2_selected_source,
-            "people_names": sorted({row["member"] for row in visit_rows}),
-            "places": places,
-            "visit_rows": visit_rows,
-        }
-    }
-    all_members = source_data[c2_selected_source]["people_names"]
-    return all_members, c2_selected_source, source_data
+        graph_2_2_data["num_visits"] = 1
+    return graph_2_1_data, graph_2_2_data
 
 
 @app.cell
-def _(all_members, mo):
-    member_widget = mo.ui.multiselect(
-        options=["All members"] + all_members,
-        value=["All members"],
-        label="Board member filter",
-        full_width=True,
-    )
-
-    neutral_widget = mo.ui.checkbox(
-        value=True,
-        label="Include uncoded or admin stops",
-    )
-
-    mo.vstack([member_widget, neutral_widget])
-    return member_widget, neutral_widget
-
-
-@app.cell
-def _(c2_selected_source, member_widget, neutral_widget, source_data):
-    c2_source_members = set(source_data[c2_selected_source]["people_names"])
-
-    c2_raw_selected_members = member_widget.value or ["All members"]
-
-    if "All members" in c2_raw_selected_members or not c2_raw_selected_members:
-        c2_selected_members = c2_source_members
-    else:
-        c2_selected_members = set(c2_raw_selected_members) & c2_source_members
-
-    c2_include_neutral = neutral_widget.value
-
-    c2_filtered_visits = [
-        row
-        for row in source_data[c2_selected_source]["visit_rows"]
-        if row["member"] in c2_selected_members
-        and (c2_include_neutral or row["category"] != "Neutral")
-    ]
-
-    c2_member_label = (
-        "all board members"
-        if c2_selected_members == c2_source_members
-        else ", ".join(sorted(c2_selected_members))
-    )
-    return c2_filtered_visits, c2_include_neutral, c2_member_label
-
-
-@app.cell(hide_code=True)
-def _(
-    c2_filtered_visits,
-    c2_member_label,
-    knn_dist_slider,
-    knn_num_slider,
-    mo,
-    mode_dropdown,
-):
-    mo.md(f"""
-    **Current filter**
-
-    - preprocessing: `graph2.py` exact first block
-    - members: `{c2_member_label}`
-    - comparison mode: `{mode_dropdown.value}`
-    - remapper: `{knn_num_slider.value}` nearest references within `{knn_dist_slider.value:.1f}` km
-    - filtered visit rows: `{len(c2_filtered_visits)}`
-    """)
+def _(graph_2_1_data):
+    graph_2_1_data
     return
 
 
 @app.cell
+def _(graph_2_1_data):
+    graph_2_1_data.to_json("data/graph_2_1_data.json")
+    return
+
+
+@app.cell
+def _(json):
+    try:
+        with open("data/oceanus_map.geojson", "r") as f:
+            oceanus_geojson = json.load(f)
+    except:
+        oceanus_geojson = None
+    return (oceanus_geojson,)
+
+
+@app.cell
+def _(pd, time_location_remapped):
+    visit_counts = (
+        time_location_remapped.groupby(["place_id", "zone_remapped", "lat", "lon"])
+        .size()
+        .reset_index(name="count")
+    )
+    total_time = (
+        time_location_remapped.groupby(["place_id", "zone_remapped", "lat", "lon"])["time_spend"]
+        .sum()
+        .dt.total_seconds()
+        / 3600
+    )
+    visit_data = pd.merge(
+        visit_counts,
+        total_time.reset_index(name="hours"),
+        on=["place_id", "zone_remapped", "lat", "lon"],
+    )
+    return (visit_data,)
+
+
+@app.cell
+def _(visit_data):
+    visit_data
+    return
+
+
+@app.cell
+def _(math, svg):
+    def _member_slug(name):
+        return str(name).replace(" ", "_")
+
+    def draw_boat(x, y, scale=1.0):
+        return svg.G(
+            transform=f"translate({x}, {y}) scale({scale})",
+            elements=[
+                svg.Path(
+                    d="M 0 0 C 32 -2 93 -2 123 0 L 108 20 C 94 28 26 28 12 20 Z",
+                    fill="url(#big-boat-hull)",
+                    stroke="#274760",
+                    stroke_width=2,
+                ),
+                svg.Rect(
+                    x=32,
+                    y=-22,
+                    width=42,
+                    height=24,
+                    rx=5,
+                    fill="#fbfeff",
+                    stroke="#708ea2",
+                    stroke_width=1.4,
+                ),
+                svg.Rect(x=40, y=-16, width=11, height=8, rx=1.5, fill="#9cc8e5"),
+                svg.Rect(x=55, y=-16, width=11, height=8, rx=1.5, fill="#9cc8e5"),
+                svg.Line(
+                    x1=75,
+                    y1=-2,
+                    x2=98,
+                    y2=-40,
+                    stroke="#567991",
+                    stroke_width=2,
+                    stroke_linecap="round",
+                ),
+                svg.Path(
+                    d="M 99 -39 Q 108 -28 101 -14 L 92 -13 L 92 -34 Z",
+                    fill="#f7fafc",
+                    stroke="#7a94a6",
+                    stroke_width=1.2,
+                ),
+                svg.Path(
+                    d="M -8 16 Q 18 24 48 19 Q 86 14 133 18",
+                    fill="none",
+                    stroke="#d8f0ff",
+                    stroke_width=3,
+                    stroke_linecap="round",
+                    opacity=0.85,
+                ),
+            ],
+        )
+
+    def draw_rowboat(x, y, scale=1.0, color="#2c7a7b", name=""):
+        safe_name = _member_slug(name)
+        return svg.G(
+            id=f"boat_{safe_name}",
+            class_="member-node",
+            transform=f"translate({x}, {y}) scale({scale})",
+            style="cursor:pointer",
+            elements=[
+                svg.Path(
+                    d="M -42 0 C -28 21 28 21 42 0 L 36 0 C 24 10 -24 10 -36 0 Z",
+                    fill="url(#rowboat-wood)",
+                    stroke="#4e3317",
+                    stroke_width=1.6,
+                ),
+                svg.Path(
+                    d="M -28 2 L 28 2",
+                    stroke="#f3e5c6",
+                    stroke_width=3,
+                    stroke_linecap="round",
+                ),
+                svg.Path(
+                    d="M -18 8 L 18 8",
+                    stroke="#ba8f56",
+                    stroke_width=2,
+                    stroke_linecap="round",
+                ),
+                svg.Line(
+                    x1=-10,
+                    y1=7,
+                    x2=35,
+                    y2=-12,
+                    stroke="#7a5335",
+                    stroke_width=2,
+                    stroke_linecap="round",
+                ),
+                svg.Circle(
+                    cx=-4,
+                    cy=-16,
+                    r=6,
+                    fill="#d5a180",
+                    stroke="#7a5845",
+                    stroke_width=0.9,
+                ),
+                svg.Path(
+                    d="M -8 -21 C -5 -26 3 -26 4 -20",
+                    fill="none",
+                    stroke="#3f2f29",
+                    stroke_width=2,
+                    stroke_linecap="round",
+                ),
+                svg.Path(
+                    d="M -15 -9 Q -4 -17 7 -9 L 5 6 L -13 6 Z",
+                    fill=color,
+                    stroke="#274050",
+                    stroke_width=1,
+                ),
+                svg.Line(
+                    x1=-12,
+                    y1=-7,
+                    x2=-22,
+                    y2=0,
+                    stroke="#d5a180",
+                    stroke_width=3,
+                    stroke_linecap="round",
+                ),
+                svg.Line(
+                    x1=4,
+                    y1=-7,
+                    x2=17,
+                    y2=0,
+                    stroke="#d5a180",
+                    stroke_width=3,
+                    stroke_linecap="round",
+                ),
+                svg.Path(
+                    d="M -54 17 Q -17 24 16 20 Q 45 17 57 18",
+                    fill="none",
+                    stroke="#dff4ff",
+                    stroke_width=3,
+                    opacity=0.9,
+                    stroke_linecap="round",
+                ),
+            ],
+        )
+
+    def draw_umbrella(x, y, scale=1.0, color="#ef8354", name=""):
+        safe_name = _member_slug(name)
+        return svg.G(
+            id=f"beach_{safe_name}",
+            class_="member-node",
+            transform=f"translate({x}, {y}) scale({scale})",
+            style="cursor:pointer",
+            elements=[
+                svg.Line(
+                    x1=0,
+                    y1=0,
+                    x2=0,
+                    y2=-56,
+                    stroke="#72553d",
+                    stroke_width=2.2,
+                    stroke_linecap="round",
+                ),
+                svg.Path(
+                    d="M -34 -30 Q -19 -58 0 -60 Q 19 -58 34 -30 Z",
+                    fill="url(#umbrella-canopy)",
+                    stroke="#9a5b42",
+                    stroke_width=1.4,
+                ),
+                svg.Line(x1=-17, y1=-32, x2=-9, y2=-57, stroke="#f7e1b2", stroke_width=1.4),
+                svg.Line(x1=0, y1=-31, x2=0, y2=-59, stroke="#f7e1b2", stroke_width=1.4),
+                svg.Line(x1=17, y1=-32, x2=9, y2=-57, stroke="#f7e1b2", stroke_width=1.4),
+                svg.Path(
+                    d="M 0 -2 C 6 8 8 12 5 18",
+                    fill="none",
+                    stroke="#72553d",
+                    stroke_width=2,
+                    stroke_linecap="round",
+                ),
+                svg.Path(
+                    d="M -22 9 Q 0 15 22 9",
+                    fill="none",
+                    stroke=color,
+                    stroke_width=2.2,
+                    opacity=0.55,
+                    stroke_linecap="round",
+                ),
+            ],
+        )
+
+    def draw_person(x, y, scale=0.8, color="#2c3e50", name=""):
+        safe_name = _member_slug(name)
+        return svg.G(
+            id=f"person_{safe_name}",
+            class_="member-node",
+            transform=f"translate({x}, {y}) scale({scale})",
+            style="cursor:pointer",
+            elements=[
+                svg.Ellipse(cx=0, cy=4, rx=16, ry=4, fill="#25313d", opacity=0.16),
+                svg.Circle(
+                    cx=0,
+                    cy=-42,
+                    r=10,
+                    fill="#d5a180",
+                    stroke="#7a5845",
+                    stroke_width=0.9,
+                ),
+                svg.Path(
+                    d="M -5 -50 C -2 -56 6 -56 7 -48",
+                    fill="none",
+                    stroke="#3f2f29",
+                    stroke_width=2.2,
+                    stroke_linecap="round",
+                ),
+                svg.Path(
+                    d="M -15 -29 Q 0 -39 15 -29 L 12 -4 L -12 -4 Z",
+                    fill=color,
+                    stroke="#26313a",
+                    stroke_width=1.1,
+                ),
+                svg.Line(
+                    x1=-11,
+                    y1=-24,
+                    x2=-20,
+                    y2=-13,
+                    stroke="#d5a180",
+                    stroke_width=3.2,
+                    stroke_linecap="round",
+                ),
+                svg.Line(
+                    x1=11,
+                    y1=-24,
+                    x2=20,
+                    y2=-13,
+                    stroke="#d5a180",
+                    stroke_width=3.2,
+                    stroke_linecap="round",
+                ),
+                svg.Line(
+                    x1=-5,
+                    y1=-4,
+                    x2=-10,
+                    y2=9,
+                    stroke="#384a5d",
+                    stroke_width=3.4,
+                    stroke_linecap="round",
+                ),
+                svg.Line(
+                    x1=5,
+                    y1=-4,
+                    x2=10,
+                    y2=9,
+                    stroke="#384a5d",
+                    stroke_width=3.4,
+                    stroke_linecap="round",
+                ),
+                svg.Line(
+                    x1=-10,
+                    y1=9,
+                    x2=-16,
+                    y2=9,
+                    stroke="#25292d",
+                    stroke_width=3.3,
+                    stroke_linecap="round",
+                ),
+                svg.Line(
+                    x1=10,
+                    y1=9,
+                    x2=16,
+                    y2=9,
+                    stroke="#25292d",
+                    stroke_width=3.3,
+                    stroke_linecap="round",
+                ),
+            ],
+        )
+
+    return draw_boat, draw_person, draw_rowboat, draw_umbrella
+
+
+@app.cell
 def _(
-    CATEGORY_COLORS,
-    CATEGORY_ORDER,
-    CATEGORY_STROKES,
-    Path,
-    c2_filtered_visits,
-    c2_include_neutral,
-    c2_member_label,
-    c2_selected_source,
-    defaultdict,
-    dominant_time_category,
-    escape,
-    json,
+    draw_boat,
+    draw_person,
+    draw_rowboat,
+    draw_umbrella,
+    graph_2_1_data,
+    graph_2_2_data,
     math,
-    mo,
-    source_data,
-    summarize_category_hours,
+    oceanus_geojson,
+    places_edited,
+    svg,
+    time_location_remapped,
 ):
-    def render_cluster2_merged():
-        width = 1180
-        height = 820
-        paper = "#eef4f8"
-        ink = "#2f2f2f"
-        soft_ink = "#53606b"
-        sea = "url(#c2-sea-grad)"
-        sand = "url(#c2-sand-grad)"
+    class DataPath(svg.Path):
+        def __init__(self, **kwargs):
+            self.data_info = kwargs.pop("data_info", "")
+            super().__init__(**kwargs)
 
-        def clip(value, low, high):
-            return max(low, min(high, value))
+        def as_str(self):
+            s = super().as_str()
+            return s.replace("/>", f' data-info="{self.data_info}"/>', 1)
 
-        def blend_hex(color_a, color_b, t):
-            t = clip(t, 0.0, 1.0)
-            a = color_a.lstrip("#")
-            b = color_b.lstrip("#")
+    class DataPolygon(svg.Polygon):
+        def __init__(self, **kwargs):
+            self.data_info = kwargs.pop("data_info", "")
+            super().__init__(**kwargs)
+
+        def as_str(self):
+            s = super().as_str()
+            return s.replace("/>", f' data-info="{self.data_info}"/>', 1)
+
+    class DataG(svg.G):
+        def __init__(self, **kwargs):
+            self.data_info = kwargs.pop("data_info", "")
+            super().__init__(**kwargs)
+
+        def as_str(self):
+            s = super().as_str()
+            if "<g " in s:
+                return s.replace("<g ", f'<g data-info="{self.data_info}" ', 1)
+            return s.replace("<g>", f'<g data-info="{self.data_info}">', 1)
+
+    class DataCircle(svg.Circle):
+        def __init__(self, **kwargs):
+            self.data_info = kwargs.pop("data_info", "")
+            super().__init__(**kwargs)
+
+        def as_str(self):
+            s = super().as_str()
+            return s.replace("/>", f' data-info="{self.data_info}"/>', 1)
+
+    def format_duration(hours):
+        h = float(hours)
+        days = int(h // 24)
+        rem_h = h % 24
+        mins = int((rem_h * 60) % 60)
+        hh = int(rem_h)
+        time_str = f"{hh:02d} hr : {mins:02d} min"
+        if days == 0:
+            return time_str
+        if days == 1:
+            return f"1 day, {time_str}"
+        return f"{days} days, {time_str}"
+
+    def create_dashboard(mode="visits", show_others=False):
+        W, H = 1100, 860
+        els = [
+            """
+            <defs>
+              <linearGradient id="page-bg" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#eef5fb"/>
+                <stop offset="100%" stop-color="#f9fbfe"/>
+              </linearGradient>
+              <linearGradient id="water-grad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#7dc7f2"/>
+                <stop offset="100%" stop-color="#2b7cab"/>
+              </linearGradient>
+              <linearGradient id="water-soft" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="#d7effc"/>
+                <stop offset="100%" stop-color="#f4fbff"/>
+              </linearGradient>
+              <linearGradient id="sand-grad" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="#f0ddb1"/>
+                <stop offset="100%" stop-color="#d9bb84"/>
+              </linearGradient>
+              <linearGradient id="shore-grad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#fff3cf"/>
+                <stop offset="100%" stop-color="#ead29b"/>
+              </linearGradient>
+              <linearGradient id="card-grad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#ffffff"/>
+                <stop offset="100%" stop-color="#f4f8fb"/>
+              </linearGradient>
+              <linearGradient id="big-boat-hull" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#f8fbff"/>
+                <stop offset="55%" stop-color="#f2f7fb"/>
+                <stop offset="56%" stop-color="#24465f"/>
+                <stop offset="100%" stop-color="#123148"/>
+              </linearGradient>
+              <linearGradient id="rowboat-wood" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#81552f"/>
+                <stop offset="100%" stop-color="#5d381b"/>
+              </linearGradient>
+              <linearGradient id="umbrella-canopy" x1="0" y1="0" x2="1" y2="0">
+                <stop offset="0%" stop-color="#ffcc8f"/>
+                <stop offset="50%" stop-color="#f97352"/>
+                <stop offset="100%" stop-color="#ffd58e"/>
+              </linearGradient>
+              <filter id="panel-shadow" x="-20%" y="-20%" width="160%" height="160%">
+                <feDropShadow dx="0" dy="10" stdDeviation="10" flood-color="#57718a" flood-opacity="0.12"/>
+              </filter>
+              <filter id="soft-shadow" x="-25%" y="-25%" width="170%" height="170%">
+                <feDropShadow dx="0" dy="4" stdDeviation="4" flood-color="#274055" flood-opacity="0.18"/>
+              </filter>
+              <filter id="dot-shadow" x="-50%" y="-50%" width="200%" height="200%">
+                <feDropShadow dx="0" dy="2" stdDeviation="2" flood-color="#1b2838" flood-opacity="0.2"/>
+              </filter>
+            </defs>
+            <style>
+              .panel-title { font-family: Inter, Segoe UI, sans-serif; font-size: 22px; font-weight: 700; fill: #20313f; }
+              .panel-subtitle { font-family: Inter, Segoe UI, sans-serif; font-size: 12px; fill: #627485; }
+              .axis-note { font-family: Inter, Segoe UI, sans-serif; font-size: 11px; fill: #73879a; }
+              .legend-text { font-family: Inter, Segoe UI, sans-serif; font-size: 12px; fill: #304454; }
+              .small-label { font-family: Inter, Segoe UI, sans-serif; font-size: 11px; fill: #4f6272; }
+              .member-name { font-family: Inter, Segoe UI, sans-serif; font-size: 11px; font-weight: 600; fill: #233444; }
+              .member-node text { pointer-events: none; }
+              .clickable-person { cursor: pointer; }
+              .locked-person .member-node circle,
+              .locked-person .member-node path,
+              .locked-person .member-node rect,
+              .locked-person .member-node line,
+              .locked-person .member-node ellipse {
+                filter: drop-shadow(0 0 8px rgba(40, 67, 88, 0.28));
+              }
+            </style>
+            """,
+            svg.Rect(x=0, y=0, width=W, height=H, fill="url(#page-bg)"),
+        ]
+
+        def fmt(v):
+            return f"{float(v):.0f}" if mode == "visits" else format_duration(v)
+
+        def clamp(v, lo, hi):
+            return max(lo, min(hi, v))
+
+        def mix_hex(a, b, t):
+            t = clamp(t, 0.0, 1.0)
+            a = a.lstrip("#")
+            b = b.lstrip("#")
             ar, ag, ab = int(a[0:2], 16), int(a[2:4], 16), int(a[4:6], 16)
             br, bg, bb = int(b[0:2], 16), int(b[2:4], 16), int(b[4:6], 16)
             return f"#{round(ar + (br - ar) * t):02x}{round(ag + (bg - ag) * t):02x}{round(ab + (bb - ab) * t):02x}"
 
-        def short_label(text, max_len=16):
-            text = str(text or "")
-            return text if len(text) <= max_len else text[: max_len - 3] + "..."
+        focus_colors = {
+            "fishing": "#1f8b6f",
+            "tourism": "#e47a5b",
+            "other": "#93a4b4",
+        }
+        focus_strokes = {
+            "fishing": "#10604d",
+            "tourism": "#ba5a3f",
+            "other": "#6f8191",
+        }
+        name_map = {"industrial": "fishing", "tourism": "tourism", "other": "other"}
 
-        def slug(text):
-            cleaned = []
-            for char in str(text or "").lower():
-                if char.isalnum():
-                    cleaned.append(char)
-                else:
-                    cleaned.append("-")
-            return "-".join(part for part in "".join(cleaned).split("-") if part)
+        # Header
+        els.append(
+            svg.Text(
+                x=38,
+                y=36,
+                text="Cluster 2",
+                class_="panel-title",
+            )
+        )
+        els.append(
+            svg.Text(
+                x=38,
+                y=58,
+                text="Board visit map and time spent across fishing and tourism activity",
+                class_="panel-subtitle",
+            )
+        )
 
-        def draw_panel(svg, x, y, w, h, label, title):
-            svg.append(
-                f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="6" ry="6" '
-                f'fill="#ffffff" stroke="#c8d4df" stroke-width="1.3"/>'
-            )
-            svg.append(
-                f'<text x="{x + 14}" y="{y + 24}" font-size="13" font-weight="700" fill="{soft_ink}">{label}</text>'
-            )
-            svg.append(
-                f'<text x="{x + 54}" y="{y + 24}" font-size="15" font-weight="700" fill="{ink}">{title}</text>'
-            )
+        # Panels
+        c5_x, c5_y, c5_w, c5_h = 32, 84, 1036, 252
+        c6_x, c6_y, c6_w, c6_h = 32, 360, 506, 468
+        c7_x, c7_y, c7_w, c7_h = 562, 360, 506, 468
 
-        def draw_person(svg, x, y, color, scale=1.0):
-            skin = "#d69a72"
-            pants = "#2f4154"
-            shoes = "#2a2a2a"
-            shirt = color
-            svg.append(
-                f'<ellipse cx="{x:.1f}" cy="{y + 5 * scale:.1f}" rx="{16 * scale:.1f}" ry="{4 * scale:.1f}" fill="#1f2933" opacity="0.18"/>'
-            )
-            svg.append(
-                f'<circle cx="{x:.1f}" cy="{y - 42 * scale:.1f}" r="{7 * scale:.1f}" fill="{skin}" stroke="#7a5845" stroke-width="{0.8 * scale:.1f}"/>'
-            )
-            svg.append(
-                f'<path d="M {x - 4 * scale:.1f} {y - 48 * scale:.1f} C {x - 2 * scale:.1f} {y - 55 * scale:.1f}, '
-                f'{x + 8 * scale:.1f} {y - 54 * scale:.1f}, {x + 9 * scale:.1f} {y - 45 * scale:.1f}" '
-                f'fill="#3f2f29" opacity="0.86"/>'
-            )
-            svg.append(
-                f'<rect x="{x - 3 * scale:.1f}" y="{y - 36 * scale:.1f}" width="{6 * scale:.1f}" height="{5 * scale:.1f}" fill="{skin}"/>'
-            )
-            svg.append(
-                f'<path d="M {x - 13 * scale:.1f} {y - 31 * scale:.1f} Q {x:.1f} {y - 40 * scale:.1f} '
-                f'{x + 13 * scale:.1f} {y - 31 * scale:.1f} L {x + 10 * scale:.1f} {y - 10 * scale:.1f} '
-                f'L {x - 10 * scale:.1f} {y - 10 * scale:.1f} Z" fill="{shirt}" stroke="#26313a" stroke-width="{0.8 * scale:.1f}"/>'
-            )
-            svg.append(
-                f'<line x1="{x - 12 * scale:.1f}" y1="{y - 28 * scale:.1f}" x2="{x - 22 * scale:.1f}" y2="{y - 17 * scale:.1f}" '
-                f'stroke="{skin}" stroke-width="{4 * scale:.1f}" stroke-linecap="round"/>'
-            )
-            svg.append(
-                f'<line x1="{x + 12 * scale:.1f}" y1="{y - 28 * scale:.1f}" x2="{x + 21 * scale:.1f}" y2="{y - 18 * scale:.1f}" '
-                f'stroke="{skin}" stroke-width="{4 * scale:.1f}" stroke-linecap="round"/>'
-            )
-            svg.append(
-                f'<path d="M {x - 8 * scale:.1f} {y - 10 * scale:.1f} L {x - 13 * scale:.1f} {y + 2 * scale:.1f} '
-                f'L {x - 5 * scale:.1f} {y + 2 * scale:.1f} L {x:.1f} {y - 10 * scale:.1f} Z" fill="{pants}"/>'
-            )
-            svg.append(
-                f'<path d="M {x + 8 * scale:.1f} {y - 10 * scale:.1f} L {x + 13 * scale:.1f} {y + 2 * scale:.1f} '
-                f'L {x + 5 * scale:.1f} {y + 2 * scale:.1f} L {x:.1f} {y - 10 * scale:.1f} Z" fill="{pants}"/>'
-            )
-            svg.append(
-                f'<ellipse cx="{x - 10 * scale:.1f}" cy="{y + 4 * scale:.1f}" rx="{6 * scale:.1f}" ry="{2.2 * scale:.1f}" fill="{shoes}"/>'
-            )
-            svg.append(
-                f'<ellipse cx="{x + 10 * scale:.1f}" cy="{y + 4 * scale:.1f}" rx="{6 * scale:.1f}" ry="{2.2 * scale:.1f}" fill="{shoes}"/>'
+        for x, y, w, h in [(c5_x, c5_y, c5_w, c5_h), (c6_x, c6_y, c6_w, c6_h), (c7_x, c7_y, c7_w, c7_h)]:
+            els.append(
+                svg.Rect(
+                    x=x,
+                    y=y,
+                    width=w,
+                    height=h,
+                    rx=16,
+                    fill="url(#card-grad)",
+                    stroke="#dbe6ee",
+                    stroke_width=1,
+                    filter="url(#panel-shadow)",
+                )
             )
 
-        def draw_boat_person(svg, x, y, color, scale=1.0):
-            skin = "#d69a72"
-            pants = "#27394c"
-            svg.append(
-                f'<circle cx="{x:.1f}" cy="{y - 31 * scale:.1f}" r="{6.2 * scale:.1f}" fill="{skin}" '
-                f'stroke="#7a5845" stroke-width="{0.8 * scale:.1f}"/>'
+        # ---- C5
+        title_c5 = "Board bias along the shoreline"
+        subtitle_c5 = "Member position is based on the tourism vs fishing delta"
+        els.append(svg.Text(x=c5_x + 24, y=c5_y + 32, text=title_c5, class_="panel-title"))
+        els.append(svg.Text(x=c5_x + 24, y=c5_y + 52, text=subtitle_c5, class_="panel-subtitle"))
+
+        data_c5 = graph_2_1_data.copy()
+        pos_col = "delta"
+        if mode == "time_spend":
+            data_c5["delta_val"] = data_c5["delta"].apply(
+                lambda x: x.total_seconds() / 3600 if hasattr(x, "total_seconds") else x
             )
-            svg.append(
-                f'<path d="M {x - 5 * scale:.1f} {y - 36 * scale:.1f} C {x - 2 * scale:.1f} {y - 42 * scale:.1f}, '
-                f'{x + 7 * scale:.1f} {y - 40 * scale:.1f}, {x + 7 * scale:.1f} {y - 31 * scale:.1f}" '
-                'fill="#3f2f29" opacity="0.88"/>'
+            pos_col = "delta_val"
+
+        min_d = float(min(0, data_c5[pos_col].min()) - 2)
+        max_d = float(max(0, data_c5[pos_col].max()) + 2)
+        range_d = max(max_d - min_d, 1.0)
+        border_ratio = (0 - min_d) / range_d
+        border_x = c5_x + 48 + border_ratio * (c5_w - 96)
+        sky_y = c5_y + 68
+        horizon_y = c5_y + 174
+        sand_top_y = c5_y + 122
+
+        els.append(svg.Rect(x=c5_x + 18, y=sky_y, width=c5_w - 36, height=58, fill="url(#water-soft)", rx=12))
+        beach_poly = (
+            f"{c5_x + 20},{horizon_y + 18} "
+            f"{c5_x + 20},{sand_top_y} "
+            f"{border_x - 42},{sand_top_y + 2} "
+            f"{border_x},{horizon_y + 10} "
+            f"{border_x},{c5_y + c5_h - 42} "
+            f"{c5_x + 20},{c5_y + c5_h - 42}"
+        )
+        water_poly = (
+            f"{border_x},{horizon_y + 10} "
+            f"{c5_x + c5_w - 20},{horizon_y - 4} "
+            f"{c5_x + c5_w - 20},{c5_y + c5_h - 42} "
+            f"{border_x},{c5_y + c5_h - 42}"
+        )
+        els.append(svg.Polygon(points=beach_poly, fill="url(#shore-grad)"))
+        els.append(svg.Polygon(points=water_poly, fill="url(#water-grad)"))
+        els.append(
+            svg.Path(
+                d=f"M {border_x - 42} {sand_top_y + 2} Q {border_x - 14} {sand_top_y + 26} {border_x} {horizon_y + 10}",
+                fill="none",
+                stroke="#d7c296",
+                stroke_width=6,
+                stroke_linecap="round",
+                opacity=0.95,
             )
-            svg.append(
-                f'<rect x="{x - 2.5 * scale:.1f}" y="{y - 25 * scale:.1f}" width="{5 * scale:.1f}" height="{4 * scale:.1f}" fill="{skin}"/>'
+        )
+        els.append(
+            svg.Path(
+                d=f"M {border_x + 1} {horizon_y + 10} C {border_x + 72} {horizon_y + 5}, {c5_x + c5_w - 120} {horizon_y + 6}, {c5_x + c5_w - 28} {horizon_y + 16}",
+                fill="none",
+                stroke="#d7f1ff",
+                stroke_width=4,
+                opacity=0.8,
+                stroke_linecap="round",
             )
-            svg.append(
-                f'<path d="M {x - 9 * scale:.1f} {y - 21 * scale:.1f} Q {x:.1f} {y - 28 * scale:.1f} '
-                f'{x + 9 * scale:.1f} {y - 21 * scale:.1f} L {x + 7 * scale:.1f} {y - 5 * scale:.1f} '
-                f'L {x - 7 * scale:.1f} {y - 5 * scale:.1f} Z" fill="{color}" stroke="#26313a" stroke-width="{0.7 * scale:.1f}"/>'
+        )
+        els.append(draw_boat(c5_x + 92, horizon_y - 4, 0.84))
+        els.append(svg.Text(x=c5_x + 54, y=sky_y + 18, text="Tourism pull", class_="legend-text"))
+        els.append(svg.Text(x=c5_x + c5_w - 138, y=sky_y + 18, text="Fishing pull", class_="legend-text"))
+        els.append(
+            svg.Line(
+                x1=border_x,
+                y1=sky_y + 6,
+                x2=border_x,
+                y2=c5_y + c5_h - 44,
+                stroke="#98aab8",
+                stroke_width=1.5,
+                stroke_dasharray="5 5",
             )
-            svg.append(
-                f'<line x1="{x - 8 * scale:.1f}" y1="{y - 18 * scale:.1f}" x2="{x - 16 * scale:.1f}" y2="{y - 8 * scale:.1f}" '
-                f'stroke="{skin}" stroke-width="{3 * scale:.1f}" stroke-linecap="round"/>'
+        )
+        els.append(svg.Text(x=border_x, y=sky_y - 4, text="Neutral", text_anchor="middle", class_="axis-note"))
+
+        member_colors = {}
+        neg_color = "#ef8354"
+        pos_color = "#1f8b6f"
+
+        def ground_y_at(x):
+            if x <= border_x:
+                slope = (horizon_y + 10 - (sand_top_y + 2)) / max(1.0, 42.0)
+                return min(horizon_y + 10, sand_top_y + 2 + max(0.0, x - (border_x - 42)) * slope)
+            return horizon_y + 12
+
+        for i, (_, row) in enumerate(data_c5.iterrows()):
+            val = float(row[pos_col])
+            x = c5_x + 48 + ((val - min_d) / range_d) * (c5_w - 96)
+            x = clamp(x, c5_x + 74, c5_x + c5_w - 74)
+            pid = row["people_id"]
+            pid_safe = pid.replace(" ", "_")
+            color_t = (val - min_d) / range_d
+            body_color = mix_hex(neg_color, pos_color, color_t)
+            member_colors[pid] = body_color
+            lane = i % 3
+            y_jitter = [0, 14, -10][lane]
+
+            if val < -0.4:
+                gy = ground_y_at(x) - 2 + y_jitter * 0.15
+                els.append(
+                    svg.G(
+                        class_=f"clickable-person pid-{pid_safe}",
+                        style="cursor:pointer",
+                        elements=[
+                            draw_umbrella(x, gy + 4, 0.88, color=body_color, name=pid),
+                            draw_person(x, gy + 45, 0.72, color=body_color, name=pid),
+                            svg.Text(
+                                x=x,
+                                y=gy + 76,
+                                text=pid,
+                                text_anchor="middle",
+                                class_="member-name",
+                            ),
+                        ],
+                    )
+                )
+            elif val > 0.4:
+                gy = horizon_y + 18 + [0, 10, -8][lane]
+                els.append(
+                    svg.G(
+                        class_=f"clickable-person pid-{pid_safe}",
+                        style="cursor:pointer",
+                        elements=[
+                            draw_rowboat(x, gy + 18, 0.98, color=body_color, name=pid),
+                            svg.Text(
+                                x=x,
+                                y=gy + 48,
+                                text=pid,
+                                text_anchor="middle",
+                                class_="member-name",
+                            ),
+                        ],
+                    )
+                )
+            else:
+                gy = ground_y_at(x) + 2
+                els.append(
+                    svg.G(
+                        class_=f"clickable-person pid-{pid_safe}",
+                        style="cursor:pointer",
+                        elements=[
+                            draw_person(x, gy + 28, 0.72, color=body_color, name=pid),
+                            svg.Text(
+                                x=x,
+                                y=gy + 60,
+                                text=pid,
+                                text_anchor="middle",
+                                class_="member-name",
+                            ),
+                        ],
+                    )
+                )
+
+        ax_y = c5_y + c5_h - 24
+        ax_x1 = c5_x + 40
+        ax_x2 = c5_x + c5_w - 40
+        els.append(svg.Line(x1=ax_x1, y1=ax_y, x2=ax_x2, y2=ax_y, stroke="#90a2b2", stroke_width=1.5))
+        for v in [min_d + 2, 0, max_d - 2]:
+            tx = c5_x + 48 + ((v - min_d) / range_d) * (c5_w - 96)
+            els.append(svg.Line(x1=tx, y1=ax_y - 5, x2=tx, y2=ax_y + 5, stroke="#90a2b2", stroke_width=1.2))
+            els.append(
+                svg.Text(
+                    x=tx,
+                    y=ax_y + 18,
+                    text=f"{v:.1f}",
+                    text_anchor="middle",
+                    class_="axis-note",
+                )
             )
-            svg.append(
-                f'<line x1="{x + 8 * scale:.1f}" y1="{y - 18 * scale:.1f}" x2="{x + 16 * scale:.1f}" y2="{y - 8 * scale:.1f}" '
-                f'stroke="{skin}" stroke-width="{3 * scale:.1f}" stroke-linecap="round"/>'
+        els.append(svg.Text(x=ax_x1, y=ax_y - 10, text="More tourism attention", class_="small-label"))
+        els.append(
+            svg.Text(
+                x=ax_x2,
+                y=ax_y - 10,
+                text="More fishing attention",
+                text_anchor="end",
+                class_="small-label",
             )
-            svg.append(
-                f'<path d="M {x - 7 * scale:.1f} {y - 5 * scale:.1f} L {x - 13 * scale:.1f} {y + 2 * scale:.1f} '
-                f'L {x + 13 * scale:.1f} {y + 2 * scale:.1f} L {x + 7 * scale:.1f} {y - 5 * scale:.1f} Z" fill="{pants}"/>'
+        )
+
+        # ---- C6
+        title_c6 = "Place-based activity map" if mode == "visits" else "Place-based time map"
+        subtitle_c6 = "Bubble size shows repeated visits or accumulated time"
+        els.append(svg.Text(x=c6_x + 24, y=c6_y + 32, text=title_c6, class_="panel-title"))
+        els.append(svg.Text(x=c6_x + 24, y=c6_y + 52, text=subtitle_c6, class_="panel-subtitle"))
+        els.append(
+            svg.Rect(
+                x=c6_x + 20,
+                y=c6_y + 70,
+                width=c6_w - 40,
+                height=c6_h - 106,
+                rx=14,
+                fill="url(#water-soft)",
+                stroke="#d3e5f0",
+                stroke_width=1,
+            )
+        )
+
+        def project(lon_val, lat_val):
+            x_min, x_max = -166.3, -164.2
+            y_min, y_max = 38.7, 39.9
+            x_pct = (lon_val - x_min) / (x_max - x_min)
+            y_pct = (lat_val - y_min) / (y_max - y_min)
+            px = c6_x + 44 + x_pct * (c6_w - 88)
+            py = c6_y + c6_h - 52 - y_pct * (c6_h - 128)
+            return px, py
+
+        if oceanus_geojson:
+            for feat in oceanus_geojson["features"]:
+                geom = feat.get("geometry", {})
+                if geom.get("type") == "Polygon":
+                    for poly in geom.get("coordinates", []):
+                        pts = " ".join(
+                            [f"{project(c[0], c[1])[0]},{project(c[0], c[1])[1]}" for c in poly]
+                        )
+                        els.append(
+                            svg.Polygon(
+                                points=pts,
+                                fill="#eef6dd" if feat["properties"].get("Name") == "Suna Island" else "#f7f1d7",
+                                stroke="#9eb88d" if feat["properties"].get("Name") == "Suna Island" else "#c1b383",
+                                stroke_width=1.1,
+                                filter="url(#soft-shadow)",
+                            )
+                        )
+
+        place_names = {}
+        if "name" in places_edited.columns:
+            place_names = places_edited.set_index("place_id")["name"].to_dict()
+
+        visit_summary = (
+            graph_2_2_data.groupby(["people_id", "place_id", "zone_remapped"])
+            .agg({"time_spend": "sum", "num_visits": "sum"})
+            .reset_index()
+        )
+        visit_summary = visit_summary.merge(places_edited[["place_id", "lat", "lon"]], on="place_id", how="left")
+
+        metric_col = "num_visits" if mode == "visits" else "time_spend"
+        visit_summary["val"] = visit_summary[metric_col]
+        max_v = float(visit_summary["val"].max() or 1)
+
+        for _, row in visit_summary.dropna(subset=["lat", "lon"]).iterrows():
+            mapped_zone = name_map.get(row["zone_remapped"], "other")
+            if not show_others and mapped_zone == "other":
+                continue
+            px, py = project(row["lat"], row["lon"])
+            r = (float(row["val"]) / max_v) ** 0.5 * 16 + 2.5
+            pid_safe = row["people_id"].replace(" ", "_")
+            loc_name = place_names.get(row["place_id"], str(row["place_id"]))
+            info = (
+                f"Member Activity | Member: {row['people_id']} | Location: {loc_name} | "
+                f"Focus: {mapped_zone.capitalize()} | Value: {fmt(row['val'])}"
+            )
+            els.append(
+                DataCircle(
+                    cx=px,
+                    cy=py,
+                    r=r,
+                    fill=focus_colors.get(mapped_zone, "#93a4b4"),
+                    stroke="#ffffff",
+                    stroke_width=1.3,
+                    opacity=0.78,
+                    filter="url(#dot-shadow)",
+                    class_=f"visit_{pid_safe} map-dot c6-segment",
+                    style="display:none",
+                    data_info=info,
+                )
             )
 
-        def draw_small_fishing_boat(svg, center_x, waterline_y, occupant_count, scale=1.0):
-            boat_w = (78 + max(0, occupant_count - 1) * 27) * scale
-            left = center_x - boat_w / 2
-            right = center_x + boat_w / 2
-            svg.append(
-                f'<path d="M {left:.1f} {waterline_y:.1f} L {right:.1f} {waterline_y:.1f} '
-                f'C {right - 11 * scale:.1f} {waterline_y + 20 * scale:.1f}, '
-                f'{left + 15 * scale:.1f} {waterline_y + 22 * scale:.1f}, {left:.1f} {waterline_y:.1f} Z" '
-                'fill="#174864" stroke="#0f2c3f" stroke-width="1.2"/>'
-            )
-            svg.append(
-                f'<path d="M {left + 8 * scale:.1f} {waterline_y + 4 * scale:.1f} '
-                f'L {right - 8 * scale:.1f} {waterline_y + 4 * scale:.1f}" '
-                'fill="none" stroke="#f6f1df" stroke-width="3" stroke-linecap="round"/>'
-            )
-            svg.append(
-                f'<path d="M {left + 15 * scale:.1f} {waterline_y + 11 * scale:.1f} '
-                f'L {right - 15 * scale:.1f} {waterline_y + 11 * scale:.1f}" '
-                'fill="none" stroke="#c79a58" stroke-width="2.4" stroke-linecap="round"/>'
-            )
-            svg.append(
-                f'<line x1="{center_x - 6 * scale:.1f}" y1="{waterline_y + 8 * scale:.1f}" '
-                f'x2="{center_x + 55 * scale:.1f}" y2="{waterline_y - 15 * scale:.1f}" '
-                'stroke="#7a5335" stroke-width="2.3" stroke-linecap="round"/>'
-            )
-            svg.append(
-                f'<circle cx="{right - 18 * scale:.1f}" cy="{waterline_y + 4 * scale:.1f}" r="{4.2 * scale:.1f}" '
-                'fill="#ef4444" stroke="#8f1d1d" stroke-width="0.9"/>'
-            )
-            svg.append(
-                f'<path d="M {left - 10 * scale:.1f} {waterline_y + 16 * scale:.1f} '
-                f'C {center_x - 20 * scale:.1f} {waterline_y + 24 * scale:.1f}, '
-                f'{center_x + 25 * scale:.1f} {waterline_y + 23 * scale:.1f}, '
-                f'{right + 12 * scale:.1f} {waterline_y + 16 * scale:.1f}" '
-                'fill="none" stroke="#d9f2ff" stroke-width="3" opacity="0.9" stroke-linecap="round"/>'
-            )
-            return boat_w
+        visit_data_agg = (
+            time_location_remapped.groupby(["place_id", "zone_remapped"])
+            .agg({"place_id": "count", "time_spend": "sum"})
+            .rename(columns={"place_id": "count"})
+            .reset_index()
+        )
+        visit_data_agg["hours"] = visit_data_agg["time_spend"].dt.total_seconds() / 3600
+        visit_data_agg = visit_data_agg.merge(places_edited[["place_id", "lat", "lon"]], on="place_id", how="left")
 
-        def polar_point(cx, cy, radius, angle_deg):
-            angle_rad = math.radians(angle_deg - 90)
-            return cx + radius * math.cos(angle_rad), cy + radius * math.sin(angle_rad)
+        total_metric = "count" if mode == "visits" else "hours"
+        max_total = float(visit_data_agg[total_metric].max() or 1)
+        total_group = svg.G(id="map_total", class_="map-total", elements=[])
+        for _, row in visit_data_agg.dropna(subset=["lat", "lon"]).iterrows():
+            px, py = project(row["lat"], row["lon"])
+            r = (float(row[total_metric]) / max_total) ** 0.5 * 14 + 2.5
+            mapped_zone = name_map.get(row["zone_remapped"], "other")
+            if not show_others and mapped_zone == "other":
+                continue
+            loc_name = place_names.get(row["place_id"], str(row["place_id"]))
+            info = (
+                f"Global Stats | Location: {loc_name} | Total {mode.title()}: {fmt(row[total_metric])} | "
+                f"Category: {mapped_zone.capitalize()}"
+            )
+            total_group.elements.append(
+                DataCircle(
+                    cx=px,
+                    cy=py,
+                    r=r,
+                    fill=focus_colors.get(mapped_zone, "#93a4b4"),
+                    stroke=focus_strokes.get(mapped_zone, "#6f8191"),
+                    stroke_width=1.1,
+                    opacity=0.42,
+                    filter="url(#dot-shadow)",
+                    class_="c6-segment",
+                    style="cursor:pointer",
+                    data_info=info,
+                )
+            )
+        els.append(total_group)
 
-        def arc_wedge_path(cx, cy, r_outer, r_inner, start_angle, end_angle):
-            x1, y1 = polar_point(cx, cy, r_outer, start_angle)
-            x2, y2 = polar_point(cx, cy, r_outer, end_angle)
-            x3, y3 = polar_point(cx, cy, r_inner, end_angle)
-            x4, y4 = polar_point(cx, cy, r_inner, start_angle)
+        legend_x = c6_x + 26
+        legend_y = c6_y + c6_h - 24
+        for label, color in [("Fishing", focus_colors["fishing"]), ("Tourism", focus_colors["tourism"])] + (
+            [("Other", focus_colors["other"])] if show_others else []
+        ):
+            els.append(svg.Circle(cx=legend_x, cy=legend_y - 4, r=6, fill=color))
+            els.append(svg.Text(x=legend_x + 12, y=legend_y, text=label, class_="legend-text"))
+            legend_x += 80
+
+        size_guide_x = c6_x + c6_w - 84
+        size_guide_y = c6_y + c6_h - 30
+        els.append(svg.Circle(cx=size_guide_x, cy=size_guide_y - 4, r=12, fill="#d8e7f0", stroke="#9cb0c1"))
+        els.append(svg.Circle(cx=size_guide_x + 30, cy=size_guide_y - 4, r=7, fill="#d8e7f0", stroke="#9cb0c1"))
+        els.append(svg.Text(x=size_guide_x - 18, y=size_guide_y + 18, text="larger = more", class_="axis-note"))
+
+        # ---- C7
+        title_c7 = "Trip split overview" if mode == "visits" else "Trip time split overview"
+        subtitle_c7 = "Center donut shows overall balance; outer ring stacks each trip"
+        els.append(svg.Text(x=c7_x + 24, y=c7_y + 32, text=title_c7, class_="panel-title"))
+        els.append(svg.Text(x=c7_x + 24, y=c7_y + 52, text=subtitle_c7, class_="panel-subtitle"))
+
+        cx, cy = c7_x + c7_w * 0.48, c7_y + c7_h * 0.55
+        inner_r, mid_r, outer_r = 56, 92, 172
+        els.append(svg.Circle(cx=cx, cy=cy, r=outer_r + 8, fill="#fbfdff", stroke="#e0e9ef", stroke_width=1))
+
+        def draw_split(df, pid_safe, is_total=False):
+            g = svg.G(
+                id=f"split_{pid_safe}",
+                style="display:block" if is_total else "display:none",
+                class_="split-info",
+                elements=[],
+            )
+            if df.empty:
+                g.elements.append(
+                    svg.Text(
+                        x=cx,
+                        y=cy,
+                        text="No matching activity",
+                        text_anchor="middle",
+                        font_size=14,
+                        fill="#95a5a6",
+                    )
+                )
+                return g
+
+            m_data = df.copy()
+            m_data["zone_mapped"] = m_data["zone_remapped"].map(name_map).fillna("other")
+            if not show_others:
+                m_data = m_data[m_data["zone_mapped"] != "other"]
+            if m_data.empty:
+                g.elements.append(
+                    svg.Text(
+                        x=cx,
+                        y=cy,
+                        text="No matching activity",
+                        text_anchor="middle",
+                        font_size=14,
+                        fill="#95a5a6",
+                    )
+                )
+                return g
+
+            val_col = "num_visits" if mode == "visits" else "time_spend"
+            m_data["val"] = m_data[val_col]
+            z_sum = m_data.groupby("zone_mapped")["val"].sum()
+            total = float(z_sum.sum() or 0)
+
+            for rr in [mid_r + 24, mid_r + 60, outer_r]:
+                g.elements.append(
+                    svg.Circle(
+                        cx=cx,
+                        cy=cy,
+                        r=rr,
+                        fill="none",
+                        stroke="#e6edf2",
+                        stroke_width=1,
+                        stroke_dasharray="2 4",
+                    )
+                )
+
+            if mode == "time_spend":
+                center_main = f"{total / 24:.2f}"
+                center_sub = "days"
+            else:
+                center_main = f"{total:.0f}"
+                center_sub = "visits"
+
+            donut_info_base = (
+                f"{'Total Overview' if is_total else 'Member Overview'} | Mode: {mode.title()} | Total: {fmt(total)} | "
+                f"Primary: {z_sum.idxmax().capitalize() if not z_sum.empty else 'N/A'}"
+            )
+
+            cur_a = -90.0
+            if len(z_sum) == 1:
+                zone, val = list(z_sum.items())[0]
+                pct = (float(val) / total) * 100 if total > 0 else 0
+                seg_info = f"{donut_info_base} | {zone.capitalize()}: {pct:.1f}%"
+                donut_g = DataG(class_="c7-segment", style="cursor:pointer", data_info=seg_info, elements=[])
+                donut_g.elements.append(
+                    svg.Circle(
+                        cx=cx,
+                        cy=cy,
+                        r=(inner_r + mid_r) / 2,
+                        fill="none",
+                        stroke=focus_colors.get(zone, "#ccd5dd"),
+                        stroke_width=(mid_r - inner_r),
+                    )
+                )
+                g.elements.append(donut_g)
+            else:
+                for zone, val in z_sum.items():
+                    sweep = (float(val) / max(total, 0.001)) * 360
+                    if sweep <= 0:
+                        continue
+                    seg_info = f"{donut_info_base} | {zone.capitalize()}: {(float(val) / total) * 100:.1f}%"
+                    d = _arc_wedge_path(cx, cy, mid_r, inner_r, cur_a, cur_a + sweep)
+                    g.elements.append(
+                        DataPath(
+                            d=d,
+                            fill=focus_colors.get(zone, "#ccd5dd"),
+                            stroke="#ffffff",
+                            stroke_width=2,
+                            class_="c7-segment",
+                            style="cursor:pointer",
+                            data_info=seg_info,
+                        )
+                    )
+                    cur_a += sweep
+
+            trip_data = (
+                m_data.groupby(["date", "trip_id", "zone_mapped"])["val"].sum().unstack(fill_value=0)
+            )
+            categories = ["fishing", "tourism", "other"]
+            trip_data = trip_data.reindex(columns=categories, fill_value=0).reset_index()
+            trip_data = trip_data.sort_values(["date", "trip_id"])
+            n_t = len(trip_data)
+            if n_t > 0:
+                angle_step = 360 / n_t
+                max_trip_val = float(trip_data[categories].sum(axis=1).max() or 1)
+                base_r = mid_r + 12
+                max_h = outer_r - base_r
+
+                label_x = c7_x + c7_w - 74
+                label_y = c7_y + 102
+                for step in [0.33, 0.66, 1.0]:
+                    ring_r = base_r + step * max_h
+                    trip_scale_val = step * max_trip_val
+                    g.elements.append(
+                        svg.Text(
+                            x=label_x,
+                            y=label_y + (1.0 - step) * 28,
+                            text=f"{trip_scale_val:.0f}" if mode == "visits" else f"{trip_scale_val:.1f}h",
+                            class_="axis-note",
+                            text_anchor="end",
+                        )
+                    )
+                    g.elements.append(
+                        svg.Line(
+                            x1=label_x + 8,
+                            y1=label_y - 4 + (1.0 - step) * 28,
+                            x2=label_x + 36,
+                            y2=label_y - 4 + (1.0 - step) * 28,
+                            stroke="#cad6df",
+                            stroke_width=1,
+                        )
+                    )
+
+                for i, (_, row) in enumerate(trip_data.iterrows()):
+                    ang_start = -90 + i * angle_step
+                    current_r = base_r
+                    trip_total = float(row[categories].sum())
+                    date_string = (
+                        row["date"].strftime("%Y-%m-%d")
+                        if hasattr(row["date"], "strftime")
+                        else str(row["date"])
+                    )
+                    trip_group = svg.G(elements=[])
+                    for zone in categories:
+                        val = float(row.get(zone, 0))
+                        bar_h = (val / max_trip_val) * max_h
+                        if bar_h <= 0:
+                            continue
+                        d = _arc_wedge_path(
+                            cx,
+                            cy,
+                            current_r + bar_h,
+                            current_r,
+                            ang_start,
+                            ang_start + angle_step * 0.86,
+                        )
+                        z_info = (
+                            f"Trip Details | ID: {row['trip_id']} | Date: {date_string} | "
+                            f"Total: {fmt(trip_total)} | Focus: {zone.capitalize()} | Value: {fmt(val)}"
+                        )
+                        trip_group.elements.append(
+                            DataPath(
+                                d=d,
+                                fill=focus_colors.get(zone, "#ccd5dd"),
+                                stroke="#ffffff",
+                                stroke_width=1.1,
+                                class_="c7-segment",
+                                style="cursor:pointer",
+                                data_info=z_info,
+                            )
+                        )
+                        current_r += bar_h
+                    g.elements.append(trip_group)
+
+            g.elements.extend(
+                [
+                    svg.Circle(cx=cx, cy=cy, r=inner_r - 10, fill="#ffffff", stroke="#e4ebf0", stroke_width=1.2),
+                    svg.Text(
+                        x=cx,
+                        y=cy - 6,
+                        text=center_main,
+                        id=f"t_val_{pid_safe}",
+                        text_anchor="middle",
+                        font_size=24,
+                        font_weight="700",
+                        fill="#213240",
+                    ),
+                    svg.Text(
+                        x=cx,
+                        y=cy + 16,
+                        text=center_sub,
+                        text_anchor="middle",
+                        font_size=12,
+                        fill="#73879a",
+                    ),
+                    svg.Text(
+                        x=cx,
+                        y=cy + 34,
+                        text="overall balance",
+                        text_anchor="middle",
+                        font_size=11,
+                        fill="#91a0ad",
+                    ),
+                ]
+            )
+            return g
+
+        def _arc_wedge_path(cx_val, cy_val, r_outer, r_inner, start_angle, end_angle):
+            def polar(radius, angle):
+                rad = math.radians(angle - 90)
+                return cx_val + radius * math.cos(rad), cy_val + radius * math.sin(rad)
+
+            x1, y1 = polar(r_outer, start_angle)
+            x2, y2 = polar(r_outer, end_angle)
+            x3, y3 = polar(r_inner, end_angle)
+            x4, y4 = polar(r_inner, start_angle)
             large_arc = 1 if (end_angle - start_angle) > 180 else 0
             return (
                 f"M {x1:.2f} {y1:.2f} "
@@ -727,713 +1466,235 @@ def _(
                 f"A {r_inner:.2f} {r_inner:.2f} 0 {large_arc} 0 {x4:.2f} {y4:.2f} Z"
             )
 
-        member_summary = {}
-        for visit in c2_filtered_visits:
-            member_name = str(visit["member"])
-            if member_name not in member_summary:
-                member_summary[member_name] = {
-                    "member": member_name,
-                    "Fishing": 0.0,
-                    "Tourism": 0.0,
-                    "Hybrid": 0.0,
-                    "Neutral": 0.0,
+        els.append(draw_split(graph_2_2_data, "total", is_total=True))
+        for member in data_c5["people_id"].unique():
+            pid_safe = member.replace(" ", "_")
+            els.append(draw_split(graph_2_2_data[graph_2_2_data["people_id"] == member], pid_safe))
+
+        leg_x = c7_x + 26
+        leg_y = c7_y + 88
+        for label, key in [("Fishing", "fishing"), ("Tourism", "tourism")] + ([("Other", "other")] if show_others else []):
+            els.append(svg.Circle(cx=leg_x, cy=leg_y - 4, r=7, fill=focus_colors[key], stroke=focus_strokes[key], stroke_width=1))
+            els.append(svg.Text(x=leg_x + 14, y=leg_y, text=label, class_="legend-text"))
+            leg_x += 94
+
+        return svg.SVG(width=W, height=H, viewBox=f"0 0 {W} {H}", elements=els).as_str()
+
+    return (create_dashboard,)
+
+
+@app.cell
+def _(
+    create_dashboard,
+    date_slider,
+    knn_dist_slider,
+    knn_num_slider,
+    mo,
+    mode_dropdown,
+    pd,
+    sel_end,
+    sel_start,
+    show_others,
+):
+    svg_str = create_dashboard(mode_dropdown.value, show_others.value)
+
+    _JS = """
+    <style>
+    body {
+        font-family: Inter, "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+        margin: 0;
+        background: #f4f8fb;
+        position: relative;
+    }
+    #tooltip {
+        position: absolute;
+        background: rgba(255,255,255,0.98);
+        border: 1px solid #d7e3ec;
+        padding: 0;
+        border-radius: 10px;
+        pointer-events: none;
+        display: none;
+        font-size: 13px;
+        box-shadow: 0 18px 40px rgba(44, 62, 80, 0.18);
+        z-index: 10000;
+        color: #2f3640;
+        min-width: 210px;
+        overflow: hidden;
+        backdrop-filter: blur(6px);
+    }
+    .tt-header {
+        background: linear-gradient(180deg, #f6fbff 0%, #eef5fb 100%);
+        padding: 9px 12px;
+        font-weight: 700;
+        border-bottom: 1px solid #dde7ef;
+        color: #314555;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.4px;
+    }
+    .tt-body { padding: 10px 12px; line-height: 1.55; }
+    .tt-row {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 16px;
+        align-items: start;
+        margin-bottom: 4px;
+    }
+    .tt-label { color: #6a7d8f; }
+    .tt-val { font-weight: 600; color: #253746; text-align: right; }
+    .locked-person .member-node circle,
+    .locked-person .member-node path,
+    .locked-person .member-node rect,
+    .locked-person .member-node line,
+    .locked-person .member-node ellipse {
+        filter: drop-shadow(0 0 10px rgba(45, 74, 96, 0.32));
+    }
+    </style>
+    <div id="tooltip"></div>
+    <script>
+    (function() {
+        let lockedPid = null;
+        const tooltip = document.getElementById('tooltip');
+
+        function formatInfo(info) {
+            const parts = info.split(' | ');
+            if (parts.length < 2) return info;
+            let html = `<div class="tt-header">${parts[0]}</div><div class="tt-body">`;
+            for (let i = 1; i < parts.length; i++) {
+                const sub = parts[i].split(': ');
+                if (sub.length === 2) {
+                    html += `<div class="tt-row"><span class="tt-label">${sub[0]}</span><span class="tt-val">${sub[1]}</span></div>`;
+                } else {
+                    html += `<div style="margin-top:4px; font-weight:500;">${parts[i]}</div>`;
                 }
-            member_summary[member_name][str(visit["category"])] += float(
-                visit["duration_hours"]
-            )
+            }
+            html += '</div>';
+            return html;
+        }
 
-        people = []
-        for summary in member_summary.values():
-            fishing_value = summary["Fishing"] + 0.5 * summary["Hybrid"]
-            tourism_value = summary["Tourism"] + 0.5 * summary["Hybrid"]
-            bias_gap = tourism_value - fishing_value
-            total_focus = fishing_value + tourism_value
-            people.append(
-                {
-                    "member": summary["member"],
-                    "bias_gap": bias_gap,
-                    "total_focus": total_focus,
-                }
-            )
-        people.sort(key=lambda item: item["bias_gap"])
+        function showMember(pid) {
+            document.querySelectorAll('.map-dot').forEach(d => d.style.display = 'none');
+            document.querySelectorAll('.split-info').forEach(s => s.style.display = 'none');
+            const mapTotal = document.getElementById('map_total');
+            if (mapTotal) mapTotal.style.display = 'none';
 
-        bias_min = min([person["bias_gap"] for person in people] + [-1.0])
-        bias_max = max([person["bias_gap"] for person in people] + [1.0])
-        max_abs_bias = max([abs(person["bias_gap"]) for person in people] + [1.0])
+            document.querySelectorAll('.visit_' + pid).forEach(d => d.style.display = '');
+            const split = document.getElementById('split_' + pid);
+            if (split) split.style.display = 'block';
 
-        grouped_places = {}
-        for visit in c2_filtered_visits:
-            place_id = str(visit["place_id"])
-            if place_id not in grouped_places:
-                grouped_places[place_id] = {
-                    "name": visit["name"],
-                    "x": visit["x"],
-                    "y": visit["y"],
-                    "zone": visit["zone"],
-                    "zone_remapped": visit["zone_remapped"],
-                    "category": visit["category"],
-                    "visits": 0,
-                    "hours": 0.0,
-                    "members": set(),
-                    "trips": set(),
-                }
-            grouped_places[place_id]["visits"] += 1
-            grouped_places[place_id]["hours"] += float(visit["duration_hours"])
-            grouped_places[place_id]["members"].add(str(visit["member"]))
-            grouped_places[place_id]["trips"].add(str(visit["trip_id"]))
+            document.querySelectorAll('.clickable-person').forEach(p => p.classList.remove('locked-person'));
+            const pEl = document.querySelector('.pid-' + pid);
+            if (pEl) pEl.classList.add('locked-person');
+        }
 
-        trip_rollup = {}
-        for visit in c2_filtered_visits:
-            trip_key = (str(visit["member"]), str(visit["trip_id"]))
-            if trip_key not in trip_rollup:
-                trip_rollup[trip_key] = {
-                    "member": str(visit["member"]),
-                    "trip_id": str(visit["trip_id"]),
-                    "date": str(visit["date"]),
-                    "start_dt": visit["start_dt"],
-                    "hours": 0.0,
-                    "category_hours": defaultdict(float),
-                    "places": set(),
-                }
-            trip_rollup[trip_key]["hours"] += float(visit["duration_hours"])
-            trip_rollup[trip_key]["category_hours"][str(visit["category"])] += float(
-                visit["duration_hours"]
-            )
-            if visit["name"]:
-                trip_rollup[trip_key]["places"].add(str(visit["name"]))
+        function resetView() {
+            if (lockedPid) return;
+            document.querySelectorAll('.map-dot').forEach(d => d.style.display = 'none');
+            document.querySelectorAll('.split-info').forEach(s => s.style.display = 'none');
+            const mapTotal = document.getElementById('map_total');
+            if (mapTotal) mapTotal.style.display = 'block';
+            const splitTotal = document.getElementById('split_total');
+            if (splitTotal) splitTotal.style.display = 'block';
+            document.querySelectorAll('.clickable-person').forEach(p => p.classList.remove('locked-person'));
+        }
 
-        trip_records = []
-        for record in trip_rollup.values():
-            trip_records.append(
-                {
-                    "member": record["member"],
-                    "trip_id": record["trip_id"],
-                    "date": record["date"],
-                    "start_dt": record["start_dt"],
-                    "hours": float(record["hours"]),
-                    "category": dominant_time_category(dict(record["category_hours"])),
-                    "places": ", ".join(sorted(record["places"])),
-                }
-            )
-        trip_records.sort(key=lambda item: (item["start_dt"], item["member"], item["trip_id"]))
+        function init() {
+            const persons = document.querySelectorAll('.clickable-person');
+            const segments = document.querySelectorAll('.c7-segment, .c6-segment');
 
-        total_hours = summarize_category_hours(c2_filtered_visits)
-        summary_labels = [
-            category_name
-            for category_name in CATEGORY_ORDER
-            if total_hours.get(category_name, 0.0) > 0
-            and (c2_include_neutral or category_name != "Neutral")
-        ]
-        if not summary_labels:
-            summary_labels = ["Neutral"]
-        summary_values = [total_hours.get(category_name, 0.0) for category_name in summary_labels]
-        if sum(summary_values) <= 0:
-            summary_values = [1.0 for _ in summary_labels]
+            persons.forEach(p => {
+                const pidClass = [...p.classList].find(c => c.startsWith('pid-'));
+                if (!pidClass) return;
+                const pid = pidClass.replace('pid-', '');
 
-        svg = [
-            f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
-            """
-            <defs>
-              <linearGradient id="c2-sky-grad" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stop-color="#dceffd"/>
-                <stop offset="100%" stop-color="#f8fbff"/>
-              </linearGradient>
-              <linearGradient id="c2-sea-grad" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stop-color="#5fa7d8"/>
-                <stop offset="100%" stop-color="#2e78aa"/>
-              </linearGradient>
-              <linearGradient id="c2-sand-grad" x1="0" y1="0" x2="1" y2="1">
-                <stop offset="0%" stop-color="#d6bd8f"/>
-                <stop offset="100%" stop-color="#b89361"/>
-              </linearGradient>
-              <linearGradient id="c2-hull-grad" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stop-color="#e8f0f7"/>
-                <stop offset="52%" stop-color="#f8fbff"/>
-                <stop offset="53%" stop-color="#24465f"/>
-                <stop offset="100%" stop-color="#132f43"/>
-              </linearGradient>
-              <linearGradient id="c2-cabin-grad" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stop-color="#ffffff"/>
-                <stop offset="100%" stop-color="#dbe7ef"/>
-              </linearGradient>
-              <filter id="c2-soft-shadow" x="-20%" y="-20%" width="140%" height="150%">
-                <feDropShadow dx="0" dy="3" stdDeviation="3" flood-color="#1f2933" flood-opacity="0.24"/>
-              </filter>
-            </defs>
-            """,
-            """
-            <style>
-              .c2-mark { cursor: pointer; transition: opacity 140ms ease, stroke-width 140ms ease, filter 140ms ease; }
-              .c2-control { cursor: pointer; }
-              .c2-control:hover { text-decoration: underline; }
-              .c2-mark:hover { stroke-width: 3 !important; filter: drop-shadow(0 0 4px rgba(47,47,47,0.35)); }
-              .c2-muted { opacity: 0.16 !important; }
-              .c2-active { stroke-width: 3 !important; filter: drop-shadow(0 0 4px rgba(47,47,47,0.35)); }
-              .c2-note { opacity: 0; transition: opacity 120ms ease; }
-              .c2-note-active { opacity: 1; }
-            </style>
-            <script><![CDATA[
-              (function () {
-                const svg = document.currentScript.parentNode;
-                let activeType = null;
-                let activeValue = null;
-
-                function setActive(type, value) {
-                  activeType = type;
-                  activeValue = value;
-                  const marks = svg.querySelectorAll(".c2-mark");
-                  marks.forEach((mark) => {
-                    const sameMember = type === "member" && (mark.dataset.member || "").split(" ").includes(value);
-                    const sameCategory = type === "category" && mark.dataset.category === value;
-                    const active = sameMember || sameCategory;
-                    mark.classList.toggle("c2-active", active);
-                    mark.classList.toggle("c2-muted", type !== null && !active);
-                  });
-                  const notes = svg.querySelectorAll(".c2-note");
-                  notes.forEach((note) => note.classList.toggle("c2-note-active", type !== null));
-                  const status = svg.querySelector("#c2-status");
-                  if (status) {
-                    status.textContent = type ? "filtered: " + value.replaceAll("-", " ") : "click a person or legend item to highlight";
-                  }
-                }
-
-                svg.addEventListener("click", (event) => {
-                  const target = event.target.closest("[data-filter-type]");
-                  if (!target) {
-                    setActive(null, null);
-                    return;
-                  }
-                  const type = target.dataset.filterType;
-                  const value = target.dataset.filterValue;
-                  if (activeType === type && activeValue === value) {
-                    setActive(null, null);
-                  } else {
-                    setActive(type, value);
-                  }
-                  event.stopPropagation();
+                p.addEventListener('mouseenter', () => { if (!lockedPid) showMember(pid); });
+                p.addEventListener('mouseleave', () => resetView());
+                p.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    if (lockedPid === pid) {
+                        lockedPid = null;
+                        resetView();
+                    } else {
+                        lockedPid = pid;
+                        showMember(pid);
+                    }
                 });
-              })();
-            ]]></script>
-            """,
-            f'<rect x="0" y="0" width="{width}" height="{height}" fill="{paper}"/>',
-            '<path d="M 26 26 L 1155 20 L 1148 795 L 31 790 Z" fill="none" stroke="#c3d1dc" stroke-width="1.2"/>',
-            '<text x="50" y="34" font-size="18" font-weight="700" fill="#293241">Cluster 2 interactive scene</text>',
-            f'<text x="246" y="34" font-size="12" fill="#606060">Source: {escape(c2_selected_source)} | Filter: {escape(c2_member_label)}</text>',
+            });
+
+            segments.forEach(seg => {
+                seg.addEventListener('mouseenter', () => {
+                    const info = seg.getAttribute('data-info');
+                    if (info) {
+                        tooltip.style.display = 'block';
+                        tooltip.innerHTML = formatInfo(info);
+                    }
+                });
+                seg.addEventListener('mousemove', (e) => {
+                    const x = e.pageX + 16;
+                    const y = e.pageY + 16;
+                    tooltip.style.left = x + 'px';
+                    tooltip.style.top = y + 'px';
+                    const box = tooltip.getBoundingClientRect();
+                    if (x + box.width > window.innerWidth) tooltip.style.left = (e.pageX - box.width - 16) + 'px';
+                    if (y + box.height > window.innerHeight) tooltip.style.top = (e.pageY - box.height - 16) + 'px';
+                });
+                seg.addEventListener('mouseleave', () => {
+                    tooltip.style.display = 'none';
+                });
+            });
+
+            document.addEventListener('click', () => {
+                lockedPid = null;
+                resetView();
+            });
+        }
+
+        let timer = setInterval(() => {
+            if (document.querySelector('.clickable-person')) {
+                clearInterval(timer);
+                init();
+            }
+        }, 100);
+    })();
+    </script>
+    """
+
+    mo.vstack(
+        [
+            mo.hstack(
+                [
+                    mo.vstack(
+                        [
+                            mo.hstack([mo.md("Remapper: max distance limit (km)"), knn_dist_slider], align="center"),
+                            mo.hstack([mo.md("Remapper: nearest locations"), knn_num_slider], align="center"),
+                        ],
+                        gap=1,
+                    ),
+                    mo.vstack(
+                        [
+                            mo.hstack([mo.md("Comparison mode"), mode_dropdown], align="center"),
+                            mo.hstack([mo.md("Show 'Others'"), show_others], align="center"),
+                            mo.hstack(
+                                [
+                                    mo.md(
+                                        f"Filter Date: **{pd.to_datetime(sel_start).strftime('%Y-%m-%d')}** to **{pd.to_datetime(sel_end).strftime('%Y-%m-%d')}**"
+                                    ),
+                                    date_slider,
+                                ],
+                                align="center",
+                            ),
+                        ],
+                        gap=1,
+                    ),
+                ],
+                justify="start",
+                gap=4,
+            ),
+            mo.iframe(svg_str + _JS, width="100%", height="880px"),
         ]
-        hover_rules = []
-        for person in people:
-            member_slug = slug(person["member"])
-            hover_rules.append(
-                f'svg:has([data-filter-value="{member_slug}"]:hover) .c2-mark:not([data-member~="{member_slug}"]) {{ opacity: 0.16 !important; }}'
-            )
-            hover_rules.append(
-                f'svg:has([data-filter-value="{member_slug}"]:hover) .c2-mark[data-member~="{member_slug}"] {{ stroke-width: 3 !important; filter: drop-shadow(0 0 4px rgba(47,47,47,0.35)); }}'
-            )
-        for category_name in CATEGORY_ORDER:
-            category_slug = slug(category_name)
-            hover_rules.append(
-                f'svg:has([data-filter-value="{category_slug}"]:hover) .c2-mark:not([data-category="{category_slug}"]) {{ opacity: 0.16 !important; }}'
-            )
-            hover_rules.append(
-                f'svg:has([data-filter-value="{category_slug}"]:hover) .c2-mark[data-category="{category_slug}"] {{ stroke-width: 3 !important; filter: drop-shadow(0 0 4px rgba(47,47,47,0.35)); }}'
-            )
-        svg.append("<style>" + "\n".join(hover_rules) + "</style>")
-
-        # C5: shoreline bias panel.
-        top_x, top_y, top_w, top_h = 55, 50, 1070, 250
-        draw_panel(svg, top_x, top_y, top_w, top_h, "C5", "shoreline bias")
-        water_y = top_y + 182
-        shoreline_x = top_x + 680
-        umbrella_cx = top_x + top_w - 153
-        umbrella_ground_y = top_y + 184
-
-        def shore_ground_y(x):
-            flat_shore_y = top_y + 124
-            if x >= shoreline_x + 92:
-                return flat_shore_y
-            if x <= shoreline_x:
-                return water_y
-            progress = (x - shoreline_x) / 92
-            eased = progress * progress * (3 - 2 * progress)
-            return water_y + (flat_shore_y - water_y) * eased
-
-        svg.append(
-            f'<rect x="{top_x + 1}" y="{top_y + 32}" width="{top_w - 2}" height="{top_h - 33}" fill="url(#c2-sky-grad)" opacity="0.96"/>'
-        )
-        svg.append(
-            f'<circle cx="{top_x + top_w - 98}" cy="{top_y + 76}" r="28" fill="#ffd36f" opacity="0.55"/>'
-        )
-        svg.append(
-            f'<path d="M {top_x + 18} {water_y} L {shoreline_x} {water_y} L {shoreline_x + 92} {top_y + 124} '
-            f'L {top_x + top_w - 20} {top_y + 124} L {top_x + top_w - 18} {top_y + top_h - 34} '
-            f'L {top_x + 18} {top_y + top_h - 34} Z" fill="{sand}" opacity="0.86"/>'
-        )
-        svg.append(
-            f'<path d="M {top_x + 18} {water_y} L {shoreline_x} {water_y} L {shoreline_x + 92} {top_y + 124} '
-            f'L {top_x + 18} {top_y + 124} Z" fill="{sea}" opacity="0.9"/>'
-        )
-        for offset in (0, 18, 36):
-            svg.append(
-                f'<path d="M {top_x + 34} {water_y - 18 + offset} C {top_x + 170} {water_y - 30 + offset}, '
-                f'{top_x + 335} {water_y - 6 + offset}, {top_x + 520} {water_y - 16 + offset}" '
-                'fill="none" stroke="#4b8ec0" stroke-width="1" opacity="0.55"/>'
-            )
-        svg.append(
-            f'<path d="M {shoreline_x} {water_y} C {shoreline_x + 30} {water_y - 28}, '
-            f'{shoreline_x + 56} {water_y - 64}, {shoreline_x + 92} {top_y + 124}" '
-            'fill="none" stroke="#4b4b4b" stroke-width="1.5"/>'
-        )
-        svg.append(
-            f'<g filter="url(#c2-soft-shadow)">'
-            f'<path d="M {top_x + 95} {water_y - 31} L {top_x + 285} {water_y - 31} '
-            f'C {top_x + 268} {water_y + 5}, {top_x + 147} {water_y + 8}, {top_x + 115} {water_y - 2} Z" '
-            'fill="url(#c2-hull-grad)" stroke="#102d40" stroke-width="1.5"/>'
-            f'<path d="M {top_x + 143} {water_y - 66} L {top_x + 226} {water_y - 66} '
-            f'L {top_x + 248} {water_y - 32} L {top_x + 126} {water_y - 32} Z" '
-            'fill="url(#c2-cabin-grad)" stroke="#60727f" stroke-width="1.2"/>'
-            f'<rect x="{top_x + 155}" y="{water_y - 57}" width="22" height="13" rx="2" fill="#7eb7da" stroke="#456577" stroke-width="0.8"/>'
-            f'<rect x="{top_x + 187}" y="{water_y - 57}" width="24" height="13" rx="2" fill="#7eb7da" stroke="#456577" stroke-width="0.8"/>'
-            f'<line x1="{top_x + 118}" y1="{water_y - 38}" x2="{top_x + 275}" y2="{water_y - 38}" stroke="#ffffff" stroke-width="2" opacity="0.9"/>'
-            f'<path d="M {top_x + 98} {water_y - 1} C {top_x + 150} {water_y + 7}, {top_x + 220} {water_y + 6}, {top_x + 292} {water_y - 1}" '
-            'fill="none" stroke="#d9f2ff" stroke-width="3" opacity="0.88"/>'
-            f'<line x1="{top_x + 134}" y1="{water_y - 72}" x2="{top_x + 134}" y2="{water_y - 119}" stroke="#263746" stroke-width="2"/>'
-            f'<path d="M {top_x + 134} {water_y - 116} C {top_x + 169} {water_y - 105}, {top_x + 179} {water_y - 82}, {top_x + 139} {water_y - 80} Z" fill="#f3f6f8" stroke="#263746" stroke-width="1"/>'
-            f'<line x1="{top_x + 228}" y1="{water_y - 65}" x2="{top_x + 270}" y2="{water_y - 94}" stroke="#263746" stroke-width="2"/>'
-            f'<line x1="{top_x + 270}" y1="{water_y - 94}" x2="{top_x + 290}" y2="{water_y - 77}" stroke="#263746" stroke-width="1.4"/>'
-            f'<circle cx="{top_x + 247}" cy="{water_y - 19}" r="5" fill="#ef4444" stroke="#8f1d1d" stroke-width="1"/>'
-            '</g>'
-        )
-        svg.append(
-            f'<g filter="url(#c2-soft-shadow)">'
-            f'<path d="M {umbrella_cx - 48} {top_y + 136} C {umbrella_cx - 27} {top_y + 92}, '
-            f'{umbrella_cx + 26} {top_y + 92}, {umbrella_cx + 48} {top_y + 136} Z" '
-            'fill="#ef5350" stroke="#8b2b29" stroke-width="1.2"/>'
-            f'<path d="M {umbrella_cx} {top_y + 136} C {umbrella_cx - 2} {top_y + 112}, '
-            f'{umbrella_cx - 1} {top_y + 97}, {umbrella_cx} {top_y + 94}" '
-            'fill="none" stroke="#8b2b29" stroke-width="1"/>'
-            f'<line x1="{umbrella_cx}" y1="{top_y + 136}" x2="{umbrella_cx}" y2="{umbrella_ground_y}" stroke="#8a6f3f" stroke-width="2"/>'
-            f'<rect x="{umbrella_cx - 38}" y="{umbrella_ground_y}" width="76" height="9" rx="4" fill="#f0f5f7" stroke="#8ea0aa" stroke-width="1"/>'
-            '</g>'
-        )
-        svg.append(
-            f'<line x1="{top_x + 150}" y1="{top_y + top_h - 48}" x2="{top_x + top_w - 160}" y2="{top_y + top_h - 48}" '
-            f'stroke="{ink}" stroke-width="1.5"/>'
-        )
-        svg.append(
-            f'<text x="{top_x + 60}" y="{top_y + top_h - 43}" font-size="12" fill="{CATEGORY_COLORS["Fishing"]}">fishing side</text>'
-        )
-        svg.append(
-            f'<text x="{top_x + top_w - 126}" y="{top_y + top_h - 43}" font-size="12" text-anchor="end" fill="{CATEGORY_COLORS["Tourism"]}">tourism side</text>'
-        )
-
-        positioned_people = []
-        for index, person in enumerate(people):
-            if abs(bias_max - bias_min) < 1e-9:
-                x = top_x + top_w * 0.53
-            else:
-                x = top_x + 185 + (person["bias_gap"] - bias_min) * (top_w - 355) / (bias_max - bias_min)
-            x = clip(x, top_x + 145, top_x + top_w - 145)
-            y = top_y + 104 - (index % 3) * 8
-            if x >= shoreline_x + 18:
-                x = umbrella_cx + (index % 3 - 1) * 22
-                y = umbrella_ground_y - 6
-            if person["bias_gap"] < 0:
-                color = blend_hex("#6e6e6e", CATEGORY_COLORS["Fishing"], abs(person["bias_gap"]) / max_abs_bias)
-            else:
-                color = blend_hex("#6e6e6e", CATEGORY_COLORS["Tourism"], abs(person["bias_gap"]) / max_abs_bias)
-            member_slug = slug(person["member"])
-            category_slug = "Fishing" if person["bias_gap"] < 0 else "Tourism"
-            positioned_people.append(
-                {
-                    "index": index,
-                    "member": person["member"],
-                    "bias_gap": person["bias_gap"],
-                    "x": x,
-                    "y": y,
-                    "color": color,
-                    "member_slug": member_slug,
-                    "category": category_slug,
-                    "category_slug": slug(category_slug),
-                    "label_y": top_y + 48 + (index % 3) * 15,
-                }
-            )
-
-        member_top_points = {}
-        water_people = [
-            person for person in positioned_people if person["x"] < shoreline_x + 18
-        ]
-        land_people = [
-            person for person in positioned_people if person["x"] >= shoreline_x + 18
-        ]
-        water_groups = []
-        for person in sorted(water_people, key=lambda item: item["x"]):
-            if (
-                not water_groups
-                or person["x"] - water_groups[-1][-1]["x"] > 95
-                or len(water_groups[-1]) >= 3
-            ):
-                water_groups.append([person])
-            else:
-                water_groups[-1].append(person)
-
-        for group_index, group in enumerate(water_groups):
-            boat_center_x = clip(
-                sum(person["x"] for person in group) / len(group),
-                top_x + 120,
-                shoreline_x - 52,
-            )
-            boat_y = water_y - 24 - (group_index % 2) * 11
-            group_members = " ".join(person["member_slug"] for person in group)
-            group_categories = {person["category_slug"] for person in group}
-            group_category = (
-                next(iter(group_categories)) if len(group_categories) == 1 else slug("Hybrid")
-            )
-            svg.append(
-                f'<g class="c2-mark c2-control" data-filter-type="category" data-filter-value="{group_category}" '
-                f'data-member="{group_members}" data-category="{group_category}">'
-            )
-            boat_w = draw_small_fishing_boat(svg, boat_center_x, boat_y, len(group), scale=0.96)
-            if len(group) == 1:
-                seat_offsets = [0]
-            else:
-                seat_gap = min(29, (boat_w - 42) / (len(group) - 1))
-                seat_offsets = [
-                    (seat_index - (len(group) - 1) / 2) * seat_gap
-                    for seat_index in range(len(group))
-                ]
-            for person, seat_offset in zip(sorted(group, key=lambda item: item["x"]), seat_offsets):
-                seat_x = boat_center_x + seat_offset
-                seat_y = boat_y - 2
-                svg.append(
-                    f'<g class="c2-mark c2-control" data-filter-type="member" data-filter-value="{person["member_slug"]}" '
-                    f'data-member="{person["member_slug"]}" data-category="{person["category_slug"]}">'
-                )
-                draw_boat_person(svg, seat_x, seat_y, person["color"], scale=0.74)
-                svg.append(
-                    f'<path d="M {seat_x:.1f} {seat_y - 34:.1f} L {seat_x:.1f} {person["label_y"] + 5}" '
-                    'fill="none" stroke="#817b6a" stroke-width="0.9" stroke-dasharray="4,4"/>'
-                )
-                svg.append(
-                    f'<text x="{seat_x:.1f}" y="{person["label_y"]}" font-size="11" font-weight="700" '
-                    f'text-anchor="middle" fill="{person["color"]}">{escape(short_label(person["member"], 14))}</text>'
-                )
-                svg.append(
-                    f'<title>{escape(person["member"])}\nBias gap: {person["bias_gap"]:+.2f} hours\nClick to highlight this member across panels.</title>'
-                )
-                svg.append("</g>")
-                member_top_points[person["member"]] = (
-                    seat_x,
-                    seat_y,
-                    person["color"],
-                    person["member_slug"],
-                )
-            svg.append(
-                f'<title>Small fishing boat: {escape(", ".join(person["member"] for person in group))}</title>'
-            )
-            svg.append("</g>")
-
-        for person in land_people:
-            x = person["x"]
-            y = person["y"]
-            svg.append(
-                f'<g class="c2-mark c2-control" data-filter-type="member" data-filter-value="{person["member_slug"]}" '
-                f'data-member="{person["member_slug"]}" data-category="{person["category_slug"]}">'
-            )
-            draw_person(svg, x, y, person["color"], scale=0.9)
-            svg.append(
-                f'<path d="M {x:.1f} {y - 34:.1f} L {x:.1f} {person["label_y"] + 5}" fill="none" stroke="#817b6a" '
-                'stroke-width="0.9" stroke-dasharray="4,4"/>'
-            )
-            svg.append(
-                f'<text x="{x:.1f}" y="{person["label_y"]}" font-size="11" font-weight="700" text-anchor="middle" '
-                f'fill="{person["color"]}">{escape(short_label(person["member"], 14))}</text>'
-            )
-            svg.append(
-                f'<title>{escape(person["member"])}\nBias gap: {person["bias_gap"]:+.2f} hours\nClick to highlight this member across panels.</title>'
-            )
-            svg.append("</g>")
-            member_top_points[person["member"]] = (
-                x,
-                y,
-                person["color"],
-                person["member_slug"],
-            )
-
-        svg.append(
-            f'<text x="{top_x + 34}" y="{top_y + top_h - 16}" font-size="11" fill="{soft_ink}">position = tourism time minus fishing time; member selection updates all panels</text>'
-        )
-        svg.append(
-            f'<text id="c2-status" x="{top_x + top_w - 34}" y="{top_y + top_h - 16}" font-size="11" text-anchor="end" fill="{soft_ink}">click a person or legend item to highlight</text>'
-        )
-        if not people:
-            svg.append(
-                f'<text x="{top_x + top_w / 2:.1f}" y="{top_y + 140}" font-size="18" text-anchor="middle" fill="{soft_ink}">No member data after current filters</text>'
-            )
-
-        # C6: board visit map.
-        map_x, map_y, map_w, map_h = 55, 335, 535, 420
-        draw_panel(svg, map_x, map_y, map_w, map_h, "C6", "board visit map")
-        all_places = source_data[c2_selected_source]["places"]
-
-        def load_oceanus_map():
-            candidates = []
-            try:
-                candidates.append(Path(__file__).parent / "data" / "oceanus_map.geojson")
-            except NameError:
-                pass
-            candidates.append(Path.cwd() / "data" / "oceanus_map.geojson")
-            candidates.append(Path.cwd().parent / "data" / "oceanus_map.geojson")
-            for candidate in candidates:
-                if candidate.exists():
-                    return json.loads(candidate.read_text(encoding="utf-8"))
-            return {"type": "FeatureCollection", "features": []}
-
-        oceanus_map = load_oceanus_map()
-
-        def iter_geo_points(coords):
-            if (
-                isinstance(coords, list)
-                and len(coords) >= 2
-                and isinstance(coords[0], (int, float))
-                and isinstance(coords[1], (int, float))
-            ):
-                yield float(coords[0]), float(coords[1])
-            elif isinstance(coords, list):
-                for item in coords:
-                    yield from iter_geo_points(item)
-
-        geo_points = [
-            point
-            for feature in oceanus_map.get("features", [])
-            for point in iter_geo_points(feature.get("geometry", {}).get("coordinates", []))
-        ]
-        place_points = [(place["x"], place["y"]) for place in all_places]
-        bounds_points = geo_points + place_points
-        x_min = min(point[0] for point in bounds_points)
-        x_max = max(point[0] for point in bounds_points)
-        y_min = min(point[1] for point in bounds_points)
-        y_max = max(point[1] for point in bounds_points)
-
-        def map_screen(x_value, y_value):
-            px = map_x + 38 + ((x_value - x_min) / (x_max - x_min)) * (map_w - 76)
-            py = map_y + map_h - 48 - ((y_value - y_min) / (y_max - y_min)) * (map_h - 96)
-            return px, py
-
-        svg.append(
-            f'<rect x="{map_x + 18}" y="{map_y + 44}" width="{map_w - 36}" height="{map_h - 84}" rx="4" fill="#d8eef9" stroke="#c7dbe7" stroke-width="1"/>'
-        )
-
-        def polygon_path(ring):
-            commands = []
-            for index, (lon, lat) in enumerate(ring):
-                px, py = map_screen(lon, lat)
-                prefix = "M" if index == 0 else "L"
-                commands.append(f"{prefix} {px:.1f} {py:.1f}")
-            if commands:
-                commands.append("Z")
-            return " ".join(commands)
-
-        def map_feature_style(feature):
-            props = feature.get("properties", {})
-            kind = props.get("Kind", "")
-            activities = " ".join(props.get("Activities", []) or [])
-            if "Fishing Ground" in kind or "fishing" in activities.lower():
-                return "#b7d4ee", "#3f78a6", "0.46"
-            if "Ecological Preserve" in kind or "Research" in activities or "Tourism" in activities:
-                return "#bfe2c8", "#4e8a63", "0.58"
-            if "Island" in kind:
-                return "#e1d3b7", "#9b855d", "0.88"
-            return "#d7e1e8", "#8798a6", "0.7"
-
-        for feature in oceanus_map.get("features", []):
-            geometry = feature.get("geometry", {})
-            props = feature.get("properties", {})
-            name = props.get("Name", "")
-            fill, stroke, opacity = map_feature_style(feature)
-            if geometry.get("type") == "Polygon":
-                for ring_index, ring in enumerate(geometry.get("coordinates", [])):
-                    path = polygon_path(ring)
-                    if not path:
-                        continue
-                    width_value = "1.2" if ring_index == 0 else "0.8"
-                    svg.append(
-                        f'<path d="{path}" fill="{fill}" fill-opacity="{opacity}" stroke="{stroke}" stroke-width="{width_value}">'
-                        f'<title>{escape(name)}</title></path>'
-                    )
-            elif geometry.get("type") == "Point":
-                lon, lat = geometry.get("coordinates", [None, None])[:2]
-                if lon is None or lat is None:
-                    continue
-                px, py = map_screen(float(lon), float(lat))
-                svg.append(
-                    f'<circle cx="{px:.1f}" cy="{py:.1f}" r="3.4" fill="#ffffff" stroke="#667788" stroke-width="1"><title>{escape(name)}</title></circle>'
-                )
-                if name in {"Himark", "Lomark", "Paackland", "Port Grove"}:
-                    svg.append(
-                        f'<text x="{px + 5:.1f}" y="{py - 5:.1f}" font-size="9" fill="#51606c">{escape(name)}</text>'
-                    )
-
-        for place in all_places:
-            px, py = map_screen(place["x"], place["y"])
-            svg.append(
-                f'<circle cx="{px:.1f}" cy="{py:.1f}" r="2.3" fill="#9b9b9b" opacity="0.28"/>'
-            )
-
-        for category_name in CATEGORY_ORDER:
-            places = [
-                place
-                for place in grouped_places.values()
-                if place["category"] == category_name
-            ]
-            for place in sorted(places, key=lambda item: item["visits"]):
-                px, py = map_screen(place["x"], place["y"])
-                radius = min(19, 3.5 + math.sqrt(place["visits"]) * 2.1)
-                opacity = "0.86" if category_name != "Neutral" else "0.42"
-                title = escape(
-                    f'{place["name"]}\n'
-                    f'Category: {category_name}\n'
-                    f'Member-visits: {place["visits"]}\n'
-                    f'Hours: {place["hours"]:.2f}\n'
-                    f'Raw zone: {place["zone"]}\n'
-                    f'Remapped zone: {place["zone_remapped"]}'
-                )
-                member_values = " ".join(slug(member) for member in sorted(place["members"]))
-                svg.append(
-                    f'<circle class="c2-mark c2-control" data-filter-type="category" data-filter-value="{slug(category_name)}" '
-                    f'data-member="{member_values}" data-category="{slug(category_name)}" cx="{px:.1f}" cy="{py:.1f}" '
-                    f'r="{radius:.1f}" fill="{CATEGORY_COLORS[category_name]}" fill-opacity="{opacity}" '
-                    f'stroke="{CATEGORY_STROKES[category_name]}" stroke-width="1.4"><title>{title}\nClick to highlight {category_name}.</title></circle>'
-                )
-
-        top_places = sorted(
-            grouped_places.values(),
-            key=lambda item: (-item["visits"], -item["hours"], str(item["name"])),
-        )[:4]
-        for index, place in enumerate(top_places):
-            px, py = map_screen(place["x"], place["y"])
-            lx = map_x + 78 + index * 112
-            ly = map_y + map_h - 40
-            svg.append(
-                f'<path d="M {px:.1f} {py:.1f} C {px:.1f} {py + 44:.1f}, {lx:.1f} {ly - 28:.1f}, {lx:.1f} {ly - 12:.1f}" '
-                'fill="none" stroke="#777" stroke-width="0.8" stroke-dasharray="3,4"/>'
-            )
-            svg.append(
-                f'<text x="{lx}" y="{ly}" font-size="10" text-anchor="middle" fill="{soft_ink}">{escape(short_label(place["name"], 18))}</text>'
-            )
-
-        svg.append(
-            f'<text x="{map_x + 24}" y="{map_y + 56}" font-size="11" fill="{soft_ink}">circle size = repeated visits; color = remapped place type</text>'
-        )
-
-        # C7: trip-time summary.
-        time_x, time_y, time_w, time_h = 625, 335, 500, 420
-        draw_panel(svg, time_x, time_y, time_w, time_h, "C7", "trip time split")
-
-        donut_cx, donut_cy = time_x + 250, time_y + 255
-        inner_outer = 82
-        inner_hole = 34
-        total_sum = sum(summary_values) or 1.0
-        current_angle = 0.0
-        for category_name, value in zip(summary_labels, summary_values):
-            angle_width = 360.0 * value / total_sum
-            color = CATEGORY_COLORS.get(category_name, CATEGORY_COLORS["Neutral"])
-            if angle_width >= 359.9:
-                svg.append(
-                    f'<circle cx="{donut_cx}" cy="{donut_cy}" r="{inner_outer}" fill="{color}" opacity="0.9"/>'
-                )
-            else:
-                path = arc_wedge_path(
-                    donut_cx,
-                    donut_cy,
-                    inner_outer,
-                    inner_hole,
-                    current_angle,
-                    current_angle + angle_width,
-                )
-                svg.append(
-                    f'<path d="{path}" fill="{color}" fill-opacity="0.9" stroke="{paper}" stroke-width="1.6"/>'
-                )
-            current_angle += angle_width
-        svg.append(
-            f'<circle cx="{donut_cx}" cy="{donut_cy}" r="{inner_hole}" fill="#ffffff" stroke="#8ea0aa" stroke-width="1"/>'
-        )
-
-        trip_total_hours = sum(record["hours"] for record in trip_records) or 1.0
-        outer_angle = 0.0
-        for record in trip_records:
-            angle_width = 360.0 * record["hours"] / trip_total_hours
-            if angle_width <= 0:
-                continue
-            color = CATEGORY_COLORS.get(record["category"], CATEGORY_COLORS["Neutral"])
-            path = arc_wedge_path(
-                donut_cx,
-                donut_cy,
-                inner_outer + 31,
-                inner_outer + 19,
-                outer_angle,
-                outer_angle + max(angle_width, 0.25),
-            )
-            svg.append(
-                f'<path class="c2-mark c2-control" data-filter-type="member" data-filter-value="{slug(record["member"])}" '
-                f'data-member="{slug(record["member"])}" data-category="{slug(record["category"])}" d="{path}" '
-                f'fill="{color}" fill-opacity="0.72" stroke="#ffffff" stroke-width="0.5">'
-                f'<title>{escape(record["trip_id"] + " | " + record["member"] + " | " + record["category"])}\nClick to highlight this member.</title></path>'
-            )
-            outer_angle += angle_width
-
-        svg.append(
-            f'<text x="{donut_cx}" y="{donut_cy - 4}" font-size="13" font-weight="700" text-anchor="middle" fill="{ink}">time</text>'
-        )
-        svg.append(
-            f'<text x="{donut_cx}" y="{donut_cy + 14}" font-size="10" text-anchor="middle" fill="{soft_ink}">{sum(summary_values):.0f} hours</text>'
-        )
-        legend_x = time_x + 55
-        legend_y = time_y + time_h - 78
-        for index, category_name in enumerate(CATEGORY_ORDER):
-            lx = legend_x + index * 98
-            svg.append(
-                f'<circle class="c2-mark c2-control" data-filter-type="category" data-filter-value="{slug(category_name)}" '
-                f'data-category="{slug(category_name)}" cx="{lx}" cy="{legend_y}" r="6" fill="{CATEGORY_COLORS[category_name]}" '
-                f'stroke="{CATEGORY_STROKES[category_name]}" stroke-width="1"><title>Click to highlight {category_name}.</title></circle>'
-            )
-            svg.append(
-                f'<text class="c2-control" data-filter-type="category" data-filter-value="{slug(category_name)}" '
-                f'x="{lx + 10}" y="{legend_y + 4}" font-size="10" fill="{soft_ink}">{category_name}</text>'
-            )
-        svg.append(
-            f'<text x="{time_x + 24}" y="{time_y + 56}" font-size="11" fill="{soft_ink}">inner = total time split; outer = each member-trip in order</text>'
-        )
-
-        # Linking marks between the top sketch and the two lower sketches.
-        svg.append(
-            f'<path d="M {top_x + 308} {top_y + top_h - 2} C {top_x + 248} {map_y - 10}, {map_x + 270} {map_y - 8}, {map_x + 270} {map_y}" '
-            'fill="none" stroke="#79746a" stroke-width="1.1" stroke-dasharray="5,6"/>'
-        )
-        svg.append(
-            f'<path d="M {top_x + 778} {top_y + top_h - 2} C {top_x + 840} {time_y - 12}, {time_x + 250} {time_y - 10}, {time_x + 250} {time_y}" '
-            'fill="none" stroke="#79746a" stroke-width="1.1" stroke-dasharray="5,6"/>'
-        )
-        svg.append(
-            f'<text x="{width - 52}" y="{height - 28}" font-size="10" text-anchor="end" fill="#777">interactive C5 + C6 + C7 view</text>'
-        )
-        svg.append("</svg>")
-        return "".join(svg)
-
-    mo.Html(render_cluster2_merged())
+    )
     return
 
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md("""
-    ## Notes
-
-    - Data loading builds on `graph2.py`: `places_edited.json` and `time_trip_spend.json` are loaded from `implementation/data`.
-    - Place labels use the Graph 2 preparation: edited place zones first, then weighted nearest-neighbor remapping for commercial/residential places.
-    - Remapped `industrial` places are shown as Fishing; remapped `tourism` places are shown as Tourism.
-    - Trip duration comes from Graph 2's prepared `time_spend` column rather than being recalculated in this notebook.
-    """)
-    return
 
 if __name__ == "__main__":
     app.run()
