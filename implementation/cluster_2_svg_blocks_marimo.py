@@ -1,56 +1,312 @@
 import marimo
 
-__generated_with = "0.17.6"
-app = marimo.App(width="wide")
+__generated_with = "0.21.1"
+app = marimo.App(width="medium")
 
 
 @app.cell
 def _():
-    import csv
-    import json
-    import math
-    from collections import Counter, defaultdict
-    from datetime import datetime, timedelta
-    from html import escape
-    from pathlib import Path
-
     import marimo as mo
-    return (
-        Counter,
-        Path,
-        csv,
-        datetime,
-        defaultdict,
-        escape,
-        json,
-        math,
-        mo,
-        timedelta,
+    import pandas as pd
+    import numpy as np
+    from sklearn.neighbors import BallTree
+
+    return BallTree, mo, np, pd
+
+
+@app.cell
+def _(BallTree, np, pd):
+
+    def classify_weighted_knn(df, k=5, max_radius_km=1.0, epsilon=0.001):
+        # 1. Split data
+        df_comm = df[df['zone'].isin(['commercial', 'residential'])].reset_index(drop=True)
+        df_targets = df[df['zone'].isin(['tourism', 'industrial'])].reset_index(drop=True)
+    
+        if df_comm.empty or df_targets.empty:
+            return pd.DataFrame()
+
+        # 2. Build Tree and Query
+        comm_rad = np.radians(df_comm[['lat', 'lon']])
+        target_rad = np.radians(df_targets[['lat', 'lon']])
+        tree = BallTree(target_rad, metric='haversine')
+    
+        earth_radius_km = 6371.0
+        radius_rad = max_radius_km / earth_radius_km
+        distances, indices = tree.query(comm_rad, k=k, return_distance=True)
+    
+        # 3. Collect Valid Neighbors and Calculate Inverse Distance Weight
+        results = []
+        for i, (dist_array, idx_array) in enumerate(zip(distances, indices)):
+            for dist, idx in zip(dist_array, idx_array):
+                if dist <= radius_rad:
+                    dist_km = dist * earth_radius_km
+                    weight = 1.0 / (dist_km + epsilon) # Add epsilon to avoid zero division
+                
+                    results.append({
+                        'commercial_id': df_comm.iloc[i]['place_id'],
+                        'target_zone': df_targets.iloc[idx]['zone'],
+                        'weight': weight
+                    })
+                
+        df_neighbors = pd.DataFrame(results)
+        if df_neighbors.empty:
+            return pd.DataFrame(columns=['commercial_id', 'predicted_zone', 'weighted_score'])
+
+        # 4. Sum the weights grouped by commercial_id and target_zone
+        weighted_scores = (df_neighbors.groupby(['commercial_id', 'target_zone'])['weight']
+                                       .sum()
+                                       .reset_index(name='weighted_score'))
+    
+        # 5. Sort by highest weighted score to determine majority
+        df_majority = (weighted_scores.sort_values(['commercial_id', 'weighted_score'], ascending=[True, False])
+                                      .drop_duplicates(subset=['commercial_id'], keep='first')
+                                      .rename(columns={'target_zone': 'predicted_zone'}))
+                              
+        return df_majority.reset_index(drop=True)
+
+    return (classify_weighted_knn,)
+
+
+@app.cell
+def _(mo, pd):
+    # places_edited = duckdb.sql("""
+    #     select place_id, 
+    #            case when zone = 'residential' and name = 'Paakland Elementary' then 'tourism'
+    #                 when zone = 'residential' and name in ('Waveside Townhomes', 'Tidewater Flats') then 'industrial'
+    #                 when name = 'Tropics Environmental Hub' then 'tourism'
+    #                 else zone end as zone, lat, lon
+    #     from database_jour.places
+    # """).to_df()
+
+    # places_edited.to_json("places_edited.json", index=False)
+
+    try:
+        places_edited = pd.read_json(str(mo.notebook_location() / "data" / "places_edited.json"))
+    except:
+        places_edited = pd.read_json("https://raw.githubusercontent.com/tvakul/dataviz1/refs/heads/main/data/places_edited.json")
+    places_edited
+    return (places_edited,)
+
+
+@app.cell
+def _(
+    classify_weighted_knn,
+    knn_dist_slider,
+    knn_num_slider,
+    pd,
+    places_edited,
+):
+    remapped_location = pd.concat([places_edited.loc[places_edited['zone'].isin(['industrial', 'tourism'])],
+    classify_weighted_knn(places_edited, max_radius_km=knn_dist_slider.value, k=knn_num_slider.value).rename(
+        columns={'predicted_zone': 'zone', 'commercial_id': 'place_id'}
     )
+    ], ignore_index=True).drop_duplicates(subset=['place_id'], keep='first')[['place_id', 'zone']]
+
+    remapped_location
+    return (remapped_location,)
 
 
 @app.cell(hide_code=True)
+def _(mo, pd):
+    # time_trip_spend = duckdb.sql("\""
+    #     select a.*, b.*, c.*, d.people_id 
+    #     from 
+    #       database_jour.trips a,
+    #      database_jour.trip_places b,
+    #         database_jour.places c,
+    #         database_jour.trip_people d
+    #         where a.trip_id = b.trip_id and b.place_id = c.place_id and a.trip_id = d.trip_id
+    #     order by a.trip_id, time
+    # "\"").to_df()
+
+    # # Create index column by trip_id and time
+    # time_trip_spend["index"] = time_trip_spend.groupby("trip_id").cumcount()
+    # time_trip_spend["index_lead"] = time_trip_spend.groupby("trip_id")["index"].shift(-1).fillna(9999).astype(int)
+
+    # # Convert start_time, end_time, time to datetime
+    # time_trip_spend["date"] = time_trip_spend["date"].str.replace("0040","2040")
+    # time_trip_spend["start_time"] = pd.to_datetime(time_trip_spend["date"] + " " + time_trip_spend["start_time"])
+    # time_trip_spend["end_time"] = pd.to_datetime(time_trip_spend["date"] + " " + time_trip_spend["end_time"])
+    # time_trip_spend["time"] = pd.to_datetime(time_trip_spend["time"].str.replace("0040","2040"))
+    # time_trip_spend["time_lead"] = time_trip_spend.groupby("trip_id")["time"].shift(-1).fillna(time_trip_spend["time"])
+
+    # #  1. Shift to get adjacent location times
+    # time_trip_spend["time_prev"] = time_trip_spend.groupby("trip_id")["time"].shift(1)
+    # time_trip_spend["time_lead"] = time_trip_spend.groupby("trip_id")["time"].shift(-1)
+
+    # # 2. Calculate the bounding time intervals
+    # # Divided by 2 for the shared transit times
+    # gap_start = time_trip_spend["time"] - time_trip_spend["start_time"]
+    # gap_prev = (time_trip_spend["time"] - time_trip_spend["time_prev"]) / 2
+
+    # gap_end = time_trip_spend["end_time"] - time_trip_spend["time"]
+    # gap_lead = (time_trip_spend["time_lead"] - time_trip_spend["time"]) / 2
+
+    # # Handle overnight boundary for the end gap if your times cross midnight
+    # gap_end = gap_end.mask(gap_end < pd.Timedelta(0), gap_end + pd.Timedelta(days=1))
+
+    # # 3. Allocate the time halves
+    # # If gap_prev is NaT (first row), it falls back to the full gap_start
+    # time_trip_spend["half_before"] = gap_prev.fillna(gap_start)
+
+    # # If gap_lead is NaT (last row), it falls back to the full gap_end
+    # time_trip_spend["half_after"] = gap_lead.fillna(gap_end)
+
+    # # 4. Final Calculation
+    # time_trip_spend["time_spend"] = time_trip_spend["half_before"] + time_trip_spend["half_after"]
+
+    # # Clean up intermediate columns
+    # time_trip_spend = time_trip_spend.drop(columns=["time_prev", "time_lead", "half_before", "half_after"])
+    # time_trip_spend[["trip_id", "people_id", "place_id", "name", "time", "time_spend", "zone", "zone_detail"]]
+
+
+    _dtypes_tts = {
+        "trip_id": "object",
+        "date": "object",
+        "start_time": "datetime64[ns]",
+        "end_time": "datetime64[ns]",
+        "trip_id_1": "object",
+        "place_id": "object",
+        "time": "datetime64[ns]",
+        "place_id_1": "object",
+        "name": "object",
+        "lat": "float64",
+        "lon": "float64",
+        "zone": "object",
+        "zone_detail": "object",
+        "people_id": "object",
+        "index": "int64",
+        "index_lead": "int64",
+        "time_spend": "timedelta64[ns]"
+    }
+    try:
+        time_trip_spend = pd.read_json(str(mo.notebook_location() / "data" / "time_trip_spend.json"), dtype=_dtypes_tts)
+    except:
+        time_trip_spend = pd.read_json("https://raw.githubusercontent.com/tvakul/dataviz1/refs/heads/main/data/time_trip_spend.json", dtype=_dtypes_tts)
+    time_trip_spend
+    return (time_trip_spend,)
+
+
+@app.cell
+def _(pd, remapped_location, time_trip_spend):
+    time_location_remapped = pd.merge(time_trip_spend[["trip_id", "date", "people_id", "place_id", "name", "time", "time_spend", "zone", 'lat', 'lon']], remapped_location.rename(columns={"zone": "zone_remapped"}),
+                on="place_id", how="left").fillna({"zone_remapped": "other"})
+    time_location_remapped
+    return (time_location_remapped,)
+
+
+@app.cell(hide_code=True)
+def _(time_location_remapped):
+    # Group by people_id and zone_remapped to calculate total visits by trip_id and place_id
+    _tmp = time_location_remapped.copy()
+    _tmp['visit_id'] = _tmp['trip_id'].astype(str) + '_' + _tmp['place_id'].astype(str) + '_' + _tmp['place_id'].astype(str)
+    people_zone_summary = _tmp.groupby(['people_id', 'zone_remapped']).agg(
+        total_visits=('visit_id', 'nunique'),   
+    ).reset_index()
+
+    people_zone_summary = people_zone_summary[people_zone_summary['zone_remapped'].isin(['industrial', 'tourism'])]
+
+
+    people_zone_summary_delta = people_zone_summary.pivot(index='people_id', columns='zone_remapped', values='total_visits').fillna(0).reset_index()
+    people_zone_summary_delta['delta'] = people_zone_summary_delta['industrial'] - people_zone_summary_delta['tourism']
+    people_zone_summary_delta.sort_values('delta', ascending=False)
+    return (people_zone_summary_delta,)
+
+
+@app.cell
+def _(pd, time_location_remapped):
+    people_timespend_summary = time_location_remapped.groupby(["people_id", "zone_remapped"]).agg({"time_spend": "sum", "trip_id": "nunique"}).reset_index()
+
+    # Filter out zone_remapped = 'other'
+    people_timespend_summary_filtered = people_timespend_summary[people_timespend_summary['zone_remapped'].isin(['industrial', 'tourism'])].copy()
+
+    # Get the delta time spend between different zones for each people_id
+    delta_time_spend = people_timespend_summary_filtered.pivot(index='people_id', columns='zone_remapped', values='time_spend').fillna(pd.Timedelta(0))
+    delta_time_spend['delta'] = delta_time_spend.get('industrial', pd.Timedelta(0)) - delta_time_spend.get('tourism', pd.Timedelta(0))
+
+    delta_time_spend
+    return (people_timespend_summary_filtered,)
+
+
+@app.cell
 def _(mo):
-    mo.md("""
-    # Cluster 2 SVG Notebook
+    knn_dist_slider = mo.ui.slider(start=0, stop=5, step=0.1, value = 1.5, show_value=True)
+    knn_num_slider = mo.ui.slider(start=0, stop=10, step=1, value = 5, show_value=True)
+    mode_dropdown = mo.ui.dropdown(options=['time_spend', 'visits'], value='visits')
+    mo.vstack([
+        mo.hstack([
+            mo.md("Remapper: max distance limit for reference (in km)"),
+            knn_dist_slider
+        ], align="start", justify="start"),
+        mo.hstack([
+            mo.md("Remapper: number of nearnest reference locations"),
+            knn_num_slider
+        ], align="start", justify="start") ,
+        mo.hstack([
+            mo.md("Comparison mode"),
+            mode_dropdown,
+        ], align="start", justify="start")     
+    ])
 
-    This notebook contains the Cluster 2 visuals directly as marimo cells:
 
-    - `fishing full`: the fishing-boat vs tourist-shore scene
-    - `block 8`: the board visit map
-    - `block 9`: the trip-time summary
-    """)
+    return knn_dist_slider, knn_num_slider, mode_dropdown
+
+
+@app.cell
+def _(time_location_remapped):
+    time_location_remappd2 = time_location_remapped.copy();
+    time_location_remappd2.groupby(['people_id', 'lat', 'lon', 'trip_id']).agg({'time_spend': 'sum'}).reset_index().rename(columns={'place_id': 'time_spend'})
     return
 
 
 @app.cell
-def _(Path):
-    try:
-        GRAPH2_DATA_DIR = Path(__file__).resolve().parent / "data"
-    except NameError:
-        GRAPH2_DATA_DIR = Path.cwd() / "data"
+def _(
+    mode_dropdown,
+    people_timespend_summary_filtered,
+    people_zone_summary_delta,
+    time_location_remapped,
+):
+    if mode_dropdown.value == 'visits':
+        graph_2_1_data = people_zone_summary_delta
+        graph_2_2_data = time_location_remapped.groupby(['people_id', 'date', 'zone_remapped', 'trip_id']).agg({'place_id': 'count'}).reset_index().rename(columns={'place_id': 'num_visits'})
+    else:
+        graph_2_1_data = people_timespend_summary_filtered
+        graph_2_2_data = time_location_remapped.groupby(['people_id', 'date', 'zone_remapped', 'trip_id']).agg({'time_spend': 'sum'}).reset_index().rename(columns={'place_id': 'time_spend'})
+    return
 
-    SOURCE_NAMES = ("Graph 2 prepared data",)
+
+@app.cell
+def _(graph_2_3_data):
+    graph_2_3_data
+    return
+
+# Interactive Cluster 2 SVG cells build on the exact Graph 2 preprocessing above.
+
+
+@app.cell
+def _(time_location_remapped):
+    graph_2_3_data = (
+        time_location_remapped.copy()
+        .groupby(['people_id', 'lat', 'lon', 'trip_id'])
+        .agg({'time_spend': 'sum'})
+        .reset_index()
+    )
+    return (graph_2_3_data,)
+
+
+@app.cell
+def _():
+    import json
+    import math
+    from collections import defaultdict
+    from html import escape
+    from pathlib import Path
+
+    return Path, defaultdict, escape, json, math
+
+
+@app.cell
+def _(math):
     CATEGORY_ORDER = ("Fishing", "Tourism", "Hybrid", "Neutral")
 
     CATEGORY_COLORS = {
@@ -74,278 +330,17 @@ def _(Path):
         "residential": "#7fb069",
         "commercial": "#e9c46a",
         "connector": "#8ecae6",
+        "other": "#d9d9d9",
         "unknown": "#d9d9d9",
     }
 
-    FISHING_TOPICS = {
-        "deep_fishing_dock",
-        "fish_vacuum",
-        "new_crane_lomark",
-        "low_volume_crane",
-        "affordable_housing",
-        "name_inspection_office",
-    }
-
-    TOURISM_TOPICS = {
-        "expanding_tourist_wharf",
-        "heritage_walking_tour",
-        "marine_life_deck",
-        "waterfront_market",
-        "name_harbor_area",
-        "statue_john_smoth",
-        "concert",
-        "renaming_park_himark",
-    }
-
-    HYBRID_TOPICS = {"seafood_festival"}
-
-    FISHING_KEYWORDS = (
-        "fish",
-        "fishing",
-        "harvest",
-        "dock",
-        "crane",
-        "shipping",
-        "wharf",
-        "marine",
-    )
-
-    TOURISM_KEYWORDS = (
-        "tour",
-        "tourist",
-        "restaurant",
-        "market",
-        "grill",
-        "hall of fame",
-        "bait",
-        "festival",
-        "park",
-        "harbor area",
-    )
-    return (
-        CATEGORY_COLORS,
-        CATEGORY_ORDER,
-        CATEGORY_STROKES,
-        FISHING_TOPICS,
-        GRAPH2_DATA_DIR,
-        HYBRID_TOPICS,
-        SOURCE_NAMES,
-        TOURISM_TOPICS,
-        ZONE_COLORS,
-    )
-
-
-@app.cell
-def _(
-    CATEGORY_ORDER,
-    Counter,
-    FISHING_TOPICS,
-    HYBRID_TOPICS,
-    TOURISM_TOPICS,
-    csv,
-    datetime,
-    defaultdict,
-    json,
-    math,
-    timedelta,
-):
-    def normalize_year(date_text):
-        if date_text.startswith("0040-"):
-            return "2040" + date_text[4:]
-        return date_text
-
-    def parse_stamp(date_text, time_text=None):
-        if time_text is None:
-            return datetime.strptime(normalize_year(date_text), "%Y-%m-%d %H:%M:%S")
-        return datetime.strptime(
-            f"{normalize_year(date_text)} {time_text}",
-            "%Y-%m-%d %H:%M:%S",
-        )
-
-    def read_rows(path):
-        with path.open(newline="", encoding="utf-8") as handle:
-            return list(csv.DictReader(handle))
-
-    def read_column_json(path):
-        with path.open(encoding="utf-8") as handle:
-            columns = json.load(handle)
-        row_ids = sorted(
-            {row_id for values in columns.values() for row_id in values},
-            key=lambda value: int(value) if str(value).isdigit() else str(value),
-        )
-        return [
-            {column_name: values.get(row_id) for column_name, values in columns.items()}
-            for row_id in row_ids
-        ]
-
-    def parse_graph2_timestamp(value):
-        if isinstance(value, (int, float)):
-            return datetime.fromtimestamp(value / 1000)
-        text = str(value or "").strip()
-        if text.isdigit():
-            return datetime.fromtimestamp(int(text) / 1000)
-        if text:
-            try:
-                return datetime.fromisoformat(text.replace("Z", "+00:00"))
-            except ValueError:
-                pass
-        return datetime(2040, 1, 1)
-
-    def parse_time_spend_hours(value):
-        if value is None:
-            return 0.0
-        if isinstance(value, (int, float)):
-            return float(value) / 3_600_000
-        text = str(value).strip()
-        if not text:
-            return 0.0
-        if "days" in text:
-            day_text, time_text = text.split("days", 1)
-            days = float(day_text.strip() or 0)
-            text = time_text.strip()
-        else:
-            days = 0.0
-        parts = [float(part) for part in text.split(":")]
-        while len(parts) < 3:
-            parts.insert(0, 0.0)
-        hours, minutes, seconds = parts[-3:]
-        return days * 24 + hours + minutes / 60 + seconds / 3600
-
-    def classify_topic(topic_id):
-        if topic_id in FISHING_TOPICS:
-            return "Fishing"
-        if topic_id in TOURISM_TOPICS:
-            return "Tourism"
-        if topic_id in HYBRID_TOPICS:
-            return "Hybrid"
-        return "Neutral"
-
-    def dominant_category(labels):
-        focused = [label for label in labels if label in {"Fishing", "Tourism", "Hybrid"}]
-        if not focused:
-            return None
-        counts = Counter(focused).most_common()
-        if len(counts) > 1 and counts[0][1] == counts[1][1]:
-            return "Hybrid"
-        return counts[0][0]
-
     def category_from_zone(zone):
-        zone = (zone or "").strip().lower()
+        zone = str(zone or "").strip().lower()
         if zone == "tourism":
             return "Tourism"
         if zone == "industrial":
             return "Fishing"
         return "Neutral"
-
-
-    def apply_manual_zone_override(row):
-        zone = (row.get("zone") or "unknown").strip().lower()
-        name = (row.get("name") or "").strip()
-
-        if zone == "residential" and name == "Paakland Elementary":
-            return "tourism", "manual override"
-        if zone == "residential" and name in {"Waveside Townhomes", "Tidewater Flats"}:
-            return "industrial", "manual override"
-        if name == "Tropics Environmental Hub":
-            return "tourism", "manual override"
-        return zone, "native zone"
-
-
-    def haversine_km(lat_a, lon_a, lat_b, lon_b):
-        lat_a_rad, lon_a_rad = math.radians(lat_a), math.radians(lon_a)
-        lat_b_rad, lon_b_rad = math.radians(lat_b), math.radians(lon_b)
-        delta_lat = lat_b_rad - lat_a_rad
-        delta_lon = lon_b_rad - lon_a_rad
-        value = (
-            math.sin(delta_lat / 2) ** 2
-            + math.cos(lat_a_rad) * math.cos(lat_b_rad) * math.sin(delta_lon / 2) ** 2
-        )
-        return 6371.0 * 2 * math.asin(min(1.0, math.sqrt(value)))
-
-
-    def classify_weighted_knn_places(places, k=5, max_radius_km=1.5, epsilon=0.001):
-        targets = [
-            place
-            for place in places
-            if place["zone_remapped"] in {"industrial", "tourism"}
-        ]
-        candidates = [
-            place
-            for place in places
-            if place["zone"] in {"commercial", "residential"}
-            and place["zone_remapped"] not in {"industrial", "tourism"}
-        ]
-
-        predictions = {}
-        if not targets or not candidates or k <= 0 or max_radius_km <= 0:
-            return predictions
-
-        for candidate in candidates:
-            neighbors = []
-            for target in targets:
-                distance_km = haversine_km(
-                    candidate["lat"],
-                    candidate["lon"],
-                    target["lat"],
-                    target["lon"],
-                )
-                neighbors.append((distance_km, target["zone_remapped"]))
-
-            scores = defaultdict(float)
-            for distance_km, target_zone in sorted(neighbors, key=lambda item: item[0])[:k]:
-                if distance_km <= max_radius_km:
-                    scores[target_zone] += 1.0 / (distance_km + epsilon)
-
-            if scores:
-                predicted_zone, weighted_score = sorted(
-                    scores.items(),
-                    key=lambda item: (-item[1], item[0]),
-                )[0]
-                predictions[candidate["place_id"]] = {
-                    "zone": predicted_zone,
-                    "score": weighted_score,
-                }
-
-        return predictions
-
-
-    def prepare_places(place_rows, remap_k, remap_radius_km):
-        places = []
-        for row in place_rows:
-            zone = (row.get("zone") or "unknown").strip().lower()
-            zone_remapped, remap_method = apply_manual_zone_override(row)
-            place_record = {
-                "place_id": str(row["place_id"]),
-                "name": row["name"],
-                "lat": float(row["lat"]),
-                "lon": float(row["lon"]),
-                "x": float(row["lat"]),
-                "y": float(row["lon"]),
-                "zone": zone,
-                "zone_remapped": zone_remapped,
-                "zone_detail": row["zone_detail"] or "",
-                "remap_method": remap_method,
-                "remap_score": None,
-            }
-            place_record["category"] = category_from_zone(zone_remapped)
-            places.append(place_record)
-
-        predictions = classify_weighted_knn_places(
-            places,
-            k=remap_k,
-            max_radius_km=remap_radius_km,
-        )
-
-        for place in places:
-            prediction = predictions.get(place["place_id"])
-            if prediction is None:
-                continue
-            place["zone_remapped"] = prediction["zone"]
-            place["category"] = category_from_zone(prediction["zone"])
-            place["remap_method"] = "weighted nearest neighbors"
-            place["remap_score"] = prediction["score"]
-
-        return places
 
     def summarize_category_hours(visit_rows):
         totals = {label: 0.0 for label in CATEGORY_ORDER}
@@ -367,300 +362,107 @@ def _(
             return ordered[0][0]
         return "Neutral"
 
-    def allocate_stop_hours(stops, start_dt, end_dt):
-        stop_rows = []
-        for index, stop in enumerate(stops):
-            previous_time = stops[index - 1]["time"] if index > 0 else None
-            next_time = stops[index + 1]["time"] if index < len(stops) - 1 else None
-
-            if previous_time is None:
-                before = stop["time"] - start_dt
-            else:
-                before = (stop["time"] - previous_time) / 2
-
-            if next_time is None:
-                after = end_dt - stop["time"]
-            else:
-                after = (next_time - stop["time"]) / 2
-
-            enriched = dict(stop)
-            enriched["duration_hours"] = max(before.total_seconds(), 0.0) / 3600.0
-            enriched["duration_hours"] += max(after.total_seconds(), 0.0) / 3600.0
-            stop_rows.append(enriched)
-
-        return stop_rows
+    return (
+        CATEGORY_COLORS,
+        CATEGORY_ORDER,
+        CATEGORY_STROKES,
+        ZONE_COLORS,
+        category_from_zone,
+        dominant_time_category,
+        summarize_category_hours,
+    )
 
 
-    def load_source(root, source_name, remap_k=5, remap_radius_km=1.5):
-        source_dir = root / f"Collected_by_the_{source_name}"
+@app.cell
+def _(category_from_zone, pd, time_location_remapped):
+    def clean(value, fallback=""):
+        if pd.isna(value):
+            return fallback
+        return value
 
-        place_rows = read_rows(source_dir / "places.csv")
-        trip_rows = read_rows(source_dir / "trips.csv")
-        trip_people_rows = read_rows(source_dir / "trip_people.csv")
-        trip_place_rows = read_rows(source_dir / "trip_places.csv")
-        people_rows = read_rows(source_dir / "people.csv")
+    def to_hours(value):
+        if pd.isna(value):
+            return 0.0
+        if hasattr(value, "total_seconds"):
+            return float(value.total_seconds()) / 3600.0
+        return float(pd.to_timedelta(value).total_seconds()) / 3600.0
 
-        place_lookup = {}
-        all_places = prepare_places(place_rows, remap_k, remap_radius_km)
+    working = time_location_remapped.copy()
+    working["zone_remapped"] = working["zone_remapped"].fillna("other")
 
-        for place_record in all_places:
-            place_lookup[place_record["place_id"]] = place_record
-            place_lookup[place_record["name"]] = place_record
-
-        people_names = sorted({row["name"] for row in people_rows})
-
-        trip_meta = {}
-        for row in trip_rows:
-            start_dt = parse_stamp(row["date"], row["start_time"])
-            end_dt = parse_stamp(row["date"], row["end_time"])
-
-            if end_dt < start_dt:
-                end_dt += timedelta(days=1)
-
-            trip_meta[row["trip_id"]] = {
-                "trip_id": row["trip_id"],
-                "date": normalize_year(row["date"]),
-                "start_dt": start_dt,
-                "end_dt": end_dt,
-            }
-
-        trip_members = defaultdict(list)
-        for row in trip_people_rows:
-            trip_members[row["trip_id"]].append(row["people_id"])
-
-        trip_stops = defaultdict(list)
-        for row in trip_place_rows:
-            place = place_lookup.get(str(row["place_id"]))
-            if place is None:
-                continue
-
-            trip_stops[row["trip_id"]].append(
-                {
-                    "trip_id": row["trip_id"],
-                    "place_id": place["place_id"],
-                    "name": place["name"],
-                    "x": place["x"],
-                    "y": place["y"],
-                    "zone": place["zone"],
-                    "zone_remapped": place["zone_remapped"],
-                    "zone_detail": place["zone_detail"],
-                    "category": place["category"],
-                    "remap_method": place["remap_method"],
-                    "remap_score": place["remap_score"],
-                    "time": parse_stamp(row["time"]),
-                }
-            )
-
-        visit_rows = []
-        for trip_id, meta in trip_meta.items():
-            stops = sorted(trip_stops.get(trip_id, []), key=lambda item: item["time"])
-            if not stops:
-                continue
-
-            members = sorted(set(trip_members.get(trip_id, []))) or ["Unknown"]
-            stop_rows = allocate_stop_hours(stops, meta["start_dt"], meta["end_dt"])
-
-            for member in members:
-                for stop in stop_rows:
-                    visit_rows.append(
-                        {
-                            "source": source_name,
-                            "trip_id": trip_id,
-                            "date": meta["date"],
-                            "start_dt": meta["start_dt"],
-                            "end_dt": meta["end_dt"],
-                            "member": member,
-                            "place_id": stop["place_id"],
-                            "name": stop["name"],
-                            "x": stop["x"],
-                            "y": stop["y"],
-                            "zone": stop["zone"],
-                            "zone_remapped": stop["zone_remapped"],
-                            "zone_detail": stop["zone_detail"],
-                            "category": stop["category"],
-                            "remap_method": stop["remap_method"],
-                            "remap_score": stop["remap_score"],
-                            "duration_hours": float(stop["duration_hours"]),
-                        }
-                    )
-
-        return {
-            "name": source_name,
-            "people_names": people_names,
-            "places": all_places,
-            "visit_rows": visit_rows,
-        }
-
-    def load_graph2_source(data_dir, source_name, remap_k=5, remap_radius_km=1.5):
-        places_edited = read_column_json(data_dir / "places_edited.json")
-        time_trip_spend = read_column_json(data_dir / "time_trip_spend.json")
-
-        graph2_places = []
-        edited_lookup = {}
-        for row in places_edited:
-            place_id = str(row["place_id"])
-            zone = str(row.get("zone") or "unknown").strip().lower()
-            place_record = {
-                "place_id": place_id,
-                "name": place_id,
+    place_rows = (
+        working.sort_values(["name", "place_id"])
+        .drop_duplicates(subset=["place_id"], keep="first")
+        .to_dict("records")
+    )
+    places = []
+    for row in place_rows:
+        zone = str(clean(row.get("zone"), "unknown")).strip().lower()
+        zone_remapped = str(clean(row.get("zone_remapped"), "other")).strip().lower()
+        places.append(
+            {
+                "place_id": str(row["place_id"]),
+                "name": str(clean(row.get("name"), row["place_id"])),
                 "lat": float(row["lat"]),
                 "lon": float(row["lon"]),
                 "x": float(row["lat"]),
                 "y": float(row["lon"]),
                 "zone": zone,
-                "zone_remapped": zone,
+                "zone_remapped": zone_remapped,
                 "zone_detail": "",
-                "category": category_from_zone(zone),
-                "remap_method": "Graph 2 edited place zone",
+                "category": category_from_zone(zone_remapped),
+                "remap_method": "Graph 2 remapped_location merge",
                 "remap_score": None,
             }
-            graph2_places.append(place_record)
-            edited_lookup[place_id] = place_record
-
-        predictions = classify_weighted_knn_places(
-            graph2_places,
-            k=remap_k,
-            max_radius_km=remap_radius_km,
         )
 
-        remapped_location = {}
-        for place in graph2_places:
-            if place["zone"] in {"industrial", "tourism"}:
-                remapped_location[place["place_id"]] = {
-                    "zone": place["zone"],
-                    "method": "Graph 2 edited place zone",
-                    "score": None,
-                }
-        for place_id, prediction in predictions.items():
-            remapped_location[place_id] = {
-                "zone": prediction["zone"],
-                "method": "Graph 2 weighted nearest-neighbor remap",
-                "score": prediction["score"],
+    visit_rows = []
+    for row in working.to_dict("records"):
+        zone = str(clean(row.get("zone"), "unknown")).strip().lower()
+        zone_remapped = str(clean(row.get("zone_remapped"), "other")).strip().lower()
+        time_value = clean(row.get("time"), None)
+        if time_value is None:
+            start_dt = pd.to_datetime(row.get("date")).to_pydatetime()
+        else:
+            start_dt = pd.to_datetime(time_value).to_pydatetime()
+        date_value = clean(row.get("date"), str(start_dt.date()))
+        visit_rows.append(
+            {
+                "source": "Graph 2 preprocessing",
+                "trip_id": str(row["trip_id"]),
+                "date": str(date_value),
+                "start_dt": start_dt,
+                "end_dt": start_dt,
+                "member": str(row.get("people_id") or "Unknown"),
+                "place_id": str(row["place_id"]),
+                "name": str(clean(row.get("name"), row["place_id"])),
+                "x": float(row["lat"]),
+                "y": float(row["lon"]),
+                "zone": zone,
+                "zone_remapped": zone_remapped,
+                "zone_detail": "",
+                "category": category_from_zone(zone_remapped),
+                "remap_method": "Graph 2 remapped_location merge",
+                "remap_score": None,
+                "duration_hours": to_hours(row.get("time_spend")),
             }
+        )
 
-        places_by_id = {}
-        visit_rows = []
-        for row in time_trip_spend:
-            place_id = str(row["place_id"])
-            edited_place = edited_lookup.get(place_id)
-            remap = remapped_location.get(place_id)
-            raw_zone = str(row.get("zone") or (edited_place or {}).get("zone") or "unknown").strip().lower()
-            zone_remapped = remap["zone"] if remap else "other"
-            category = category_from_zone(zone_remapped)
-            lat = float(row.get("lat") if row.get("lat") is not None else edited_place["lat"])
-            lon = float(row.get("lon") if row.get("lon") is not None else edited_place["lon"])
-            name = str(row.get("name") or place_id)
-            zone_detail = str(row.get("zone_detail") or "")
-
-            if place_id not in places_by_id:
-                places_by_id[place_id] = {
-                    "place_id": place_id,
-                    "name": name,
-                    "lat": lat,
-                    "lon": lon,
-                    "x": lat,
-                    "y": lon,
-                    "zone": raw_zone,
-                    "zone_remapped": zone_remapped,
-                    "zone_detail": zone_detail,
-                    "category": category,
-                    "remap_method": remap["method"] if remap else "Graph 2 merge: no fishing/tourism remap",
-                    "remap_score": remap["score"] if remap else None,
-                }
-
-            start_dt = parse_graph2_timestamp(row.get("start_time"))
-            end_dt = parse_graph2_timestamp(row.get("end_time"))
-            if end_dt < start_dt:
-                end_dt += timedelta(days=1)
-
-            visit_rows.append(
-                {
-                    "source": source_name,
-                    "trip_id": str(row["trip_id"]),
-                    "date": str(row.get("date") or start_dt.date()),
-                    "start_dt": start_dt,
-                    "end_dt": end_dt,
-                    "member": str(row.get("people_id") or "Unknown"),
-                    "place_id": place_id,
-                    "name": name,
-                    "x": lat,
-                    "y": lon,
-                    "zone": raw_zone,
-                    "zone_remapped": zone_remapped,
-                    "zone_detail": zone_detail,
-                    "category": category,
-                    "remap_method": remap["method"] if remap else "Graph 2 merge: no fishing/tourism remap",
-                    "remap_score": remap["score"] if remap else None,
-                    "duration_hours": parse_time_spend_hours(row.get("time_spend")),
-                }
-            )
-
-        return {
-            "name": source_name,
+    c2_selected_source = "Graph 2 preprocessing"
+    source_data = {
+        c2_selected_source: {
+            "name": c2_selected_source,
             "people_names": sorted({row["member"] for row in visit_rows}),
-            "places": sorted(places_by_id.values(), key=lambda place: place["name"]),
+            "places": places,
             "visit_rows": visit_rows,
         }
-    return dominant_time_category, load_graph2_source, summarize_category_hours
-
-
-@app.cell
-def _(mo):
-    remap_distance_widget = mo.ui.slider(
-        start=0,
-        stop=5,
-        step=0.1,
-        value=1.5,
-        show_value=True,
-        label="Remap radius (km)",
-    )
-    remap_neighbor_widget = mo.ui.slider(
-        start=1,
-        stop=10,
-        step=1,
-        value=5,
-        show_value=True,
-        label="Nearest references",
-    )
-    return remap_distance_widget, remap_neighbor_widget
-
-
-@app.cell
-def _(
-    GRAPH2_DATA_DIR,
-    SOURCE_NAMES,
-    load_graph2_source,
-    remap_distance_widget,
-    remap_neighbor_widget,
-):
-    source_data = {
-        source_name: load_graph2_source(
-            GRAPH2_DATA_DIR,
-            source_name,
-            remap_k=remap_neighbor_widget.value,
-            remap_radius_km=remap_distance_widget.value,
-        )
-        for source_name in SOURCE_NAMES
     }
-
-    all_members = sorted(
-        {
-            member
-            for dataset in source_data.values()
-            for member in dataset["people_names"]
-        }
-    )
-    return all_members, source_data
+    all_members = source_data[c2_selected_source]["people_names"]
+    return all_members, c2_selected_source, source_data
 
 
 @app.cell
-def _(SOURCE_NAMES, all_members, mo):
-    source_widget = mo.ui.dropdown(
-        options=list(SOURCE_NAMES),
-        value=SOURCE_NAMES[0],
-        label="Source",
-    )
-
+def _(all_members, mo):
     member_widget = mo.ui.multiselect(
         options=["All members"] + all_members,
         value=["All members"],
@@ -672,33 +474,13 @@ def _(SOURCE_NAMES, all_members, mo):
         value=True,
         label="Include uncoded or admin stops",
     )
-    return member_widget, neutral_widget, source_widget
+
+    mo.vstack([member_widget, neutral_widget])
+    return member_widget, neutral_widget
 
 
 @app.cell
-def _(
-    member_widget,
-    mo,
-    neutral_widget,
-    remap_distance_widget,
-    remap_neighbor_widget,
-    source_widget,
-):
-    mo.vstack(
-        [
-            source_widget,
-            member_widget,
-            neutral_widget,
-            remap_distance_widget,
-            remap_neighbor_widget,
-        ]
-    )
-    return
-
-
-@app.cell
-def _(member_widget, neutral_widget, source_data, source_widget):
-    c2_selected_source = source_widget.value
+def _(c2_selected_source, member_widget, neutral_widget, source_data):
     c2_source_members = set(source_data[c2_selected_source]["people_names"])
 
     c2_raw_selected_members = member_widget.value or ["All members"]
@@ -722,464 +504,27 @@ def _(member_widget, neutral_widget, source_data, source_widget):
         if c2_selected_members == c2_source_members
         else ", ".join(sorted(c2_selected_members))
     )
-    return (
-        c2_filtered_visits,
-        c2_include_neutral,
-        c2_member_label,
-        c2_selected_source,
-    )
+    return c2_filtered_visits, c2_include_neutral, c2_member_label
 
 
 @app.cell(hide_code=True)
 def _(
     c2_filtered_visits,
     c2_member_label,
-    c2_selected_source,
+    knn_dist_slider,
+    knn_num_slider,
     mo,
-    remap_distance_widget,
-    remap_neighbor_widget,
+    mode_dropdown,
 ):
     mo.md(f"""
     **Current filter**
 
-    - source: `{c2_selected_source}`
+    - preprocessing: `graph2.py` exact first block
     - members: `{c2_member_label}`
-    - remapper: `{remap_neighbor_widget.value}` nearest references within `{remap_distance_widget.value:.1f}` km
+    - comparison mode: `{mode_dropdown.value}`
+    - remapper: `{knn_num_slider.value}` nearest references within `{knn_dist_slider.value:.1f}` km
     - filtered visit rows: `{len(c2_filtered_visits)}`
     """)
-    return
-
-
-@app.cell
-def _(
-    CATEGORY_COLORS,
-    c2_filtered_visits,
-    c2_member_label,
-    c2_selected_source,
-    escape,
-):
-    def render_fishing_full():
-        scene_width = 980
-        scene_height = 620
-
-        member_summary = {}
-        for visit in c2_filtered_visits:
-            member_name = visit["member"]
-            if member_name not in member_summary:
-                member_summary[member_name] = {
-                    "member": member_name,
-                    "Fishing": 0.0,
-                    "Tourism": 0.0,
-                    "Hybrid": 0.0,
-                    "Neutral": 0.0,
-                }
-            member_summary[member_name][visit["category"]] += float(visit["duration_hours"])
-
-        people = []
-        for summary in member_summary.values():
-            fishing_value = summary["Fishing"] + 0.5 * summary["Hybrid"]
-            tourism_value = summary["Tourism"] + 0.5 * summary["Hybrid"]
-            people.append(
-                {
-                    "member": summary["member"],
-                    "bias_gap": tourism_value - fishing_value,
-                }
-            )
-
-        if people:
-            bias_min = min(person["bias_gap"] for person in people)
-            bias_max = max(person["bias_gap"] for person in people)
-        else:
-            bias_min = -1.0
-            bias_max = 1.0
-
-        def sx(x_ratio):
-            return round(x_ratio * scene_width, 1)
-
-        def sy(y_ratio):
-            return round((1 - y_ratio) * scene_height, 1)
-
-        def bias_to_x(value):
-            if abs(bias_max - bias_min) < 1e-9:
-                return 0.54
-            return 0.26 + (value - bias_min) * (0.82 - 0.26) / (bias_max - bias_min)
-
-        def blend_hex(color_a, color_b, t):
-            t = max(0.0, min(1.0, t))
-            a = color_a.lstrip("#")
-            b = color_b.lstrip("#")
-            ar, ag, ab = int(a[0:2], 16), int(a[2:4], 16), int(a[4:6], 16)
-            br, bg, bb = int(b[0:2], 16), int(b[2:4], 16), int(b[4:6], 16)
-            rr = round(ar + (br - ar) * t)
-            rg = round(ag + (bg - ag) * t)
-            rb = round(ab + (bb - ab) * t)
-            return f"#{rr:02x}{rg:02x}{rb:02x}"
-
-        max_abs_bias = max([abs(person["bias_gap"]) for person in people] + [0.25])
-        for person in people:
-            if max_abs_bias <= 1e-9:
-                person["color"] = "#6f6f6f"
-            elif person["bias_gap"] < 0:
-                person["color"] = blend_hex("#6f6f6f", CATEGORY_COLORS["Fishing"], abs(person["bias_gap"]) / max_abs_bias)
-            else:
-                person["color"] = blend_hex("#6f6f6f", CATEGORY_COLORS["Tourism"], abs(person["bias_gap"]) / max_abs_bias)
-
-            person["scene_x"] = bias_to_x(person["bias_gap"])
-            if person["scene_x"] <= 0.31:
-                person["foot_y"] = 0.37
-                person["label_x"] = person["scene_x"] - 0.02
-                person["label_y"] = 0.60
-                person["label_anchor"] = "end"
-            elif person["scene_x"] >= 0.74:
-                person["foot_y"] = 0.32
-                person["label_x"] = person["scene_x"] + 0.02
-                person["label_y"] = 0.56
-                person["label_anchor"] = "start"
-            else:
-                person["foot_y"] = 0.27
-                person["label_x"] = person["scene_x"]
-                person["label_y"] = 0.54
-                person["label_anchor"] = "middle"
-            person["head_y"] = person["foot_y"] + 0.10
-
-        people.sort(key=lambda person: person["bias_gap"])
-
-        def draw_person(svg_parts, x_ratio, foot_y_ratio, stroke_color):
-            x = sx(x_ratio)
-            foot_y = sy(foot_y_ratio)
-            knee_y = sy(foot_y_ratio + 0.07)
-            arm_y = sy(foot_y_ratio + 0.045)
-            left_hand_x = sx(x_ratio - 0.045)
-            right_hand_x = sx(x_ratio + 0.045)
-            left_foot_x = sx(x_ratio - 0.035)
-            right_foot_x = sx(x_ratio + 0.035)
-            head_y = sy(foot_y_ratio + 0.10)
-
-            svg_parts.append(f'<line x1="{x}" y1="{foot_y}" x2="{x}" y2="{knee_y}" stroke="{stroke_color}" stroke-width="2.2" stroke-linecap="round"/>')
-            svg_parts.append(f'<line x1="{left_hand_x}" y1="{arm_y}" x2="{right_hand_x}" y2="{arm_y}" stroke="{stroke_color}" stroke-width="2.2" stroke-linecap="round"/>')
-            svg_parts.append(f'<line x1="{x}" y1="{foot_y}" x2="{left_foot_x}" y2="{sy(foot_y_ratio - 0.035)}" stroke="{stroke_color}" stroke-width="2.2" stroke-linecap="round"/>')
-            svg_parts.append(f'<line x1="{x}" y1="{foot_y}" x2="{right_foot_x}" y2="{sy(foot_y_ratio - 0.035)}" stroke="{stroke_color}" stroke-width="2.2" stroke-linecap="round"/>')
-            svg_parts.append(f'<circle cx="{x}" cy="{head_y}" r="7.5" fill="none" stroke="{stroke_color}" stroke-width="2.2"/>')
-
-        svg = []
-        svg.append(f'<svg xmlns="http://www.w3.org/2000/svg" width="{scene_width}" height="{scene_height}" viewBox="0 0 {scene_width} {scene_height}">')
-        svg.append(f'<rect x="0" y="0" width="{scene_width}" height="{scene_height}" fill="#fbfaf7" rx="20" ry="20"/>')
-        svg.append(f'<rect x="{sx(0.05)}" y="{sy(0.95)}" width="{sx(0.95) - sx(0.05)}" height="{sy(0.52) - sy(0.95)}" fill="#fbf4e8"/>')
-        svg.append(f'<rect x="{sx(0.05)}" y="{sy(0.28)}" width="{sx(0.67) - sx(0.05)}" height="{sy(0.05) - sy(0.28)}" fill="#cfe2ec"/>')
-        svg.append(f'<polygon points="{sx(0.67)},{sy(0.05)} {sx(0.95)},{sy(0.05)} {sx(0.95)},{sy(0.34)} {sx(0.81)},{sy(0.34)} {sx(0.76)},{sy(0.32)} {sx(0.73)},{sy(0.30)} {sx(0.67)},{sy(0.28)}" fill="#ead8ab"/>')
-        svg.append(f'<line x1="{sx(0.05)}" y1="{sy(0.28)}" x2="{sx(0.95)}" y2="{sy(0.28)}" stroke="#403d39" stroke-width="1.4"/>')
-        svg.append(f'<polygon points="{sx(0.11)},{sy(0.39)} {sx(0.28)},{sy(0.39)} {sx(0.245)},{sy(0.28)} {sx(0.165)},{sy(0.28)}" fill="#97633e" stroke="#4b3a30" stroke-width="2"/>')
-        svg.append(f'<line x1="{sx(0.16)}" y1="{sy(0.39)}" x2="{sx(0.16)}" y2="{sy(0.59)}" stroke="#4b3a30" stroke-width="2.2"/>')
-        svg.append(f'<line x1="{sx(0.16)}" y1="{sy(0.59)}" x2="{sx(0.20)}" y2="{sy(0.58)}" stroke="#4b3a30" stroke-width="1.8"/>')
-        svg.append(f'<path d="M {sx(0.16)} {sy(0.59)} Q {sx(0.10)} {sy(0.45)} {sx(0.09)} {sy(0.26)}" fill="none" stroke="#4b3a30" stroke-width="1.8"/>')
-        svg.append(f'<line x1="{sx(0.11)}" y1="{sy(0.39)}" x2="{sx(0.30)}" y2="{sy(0.39)}" stroke="#4b3a30" stroke-width="1.8"/>')
-
-        for person in people:
-            if 0.31 < person["scene_x"] < 0.74:
-                svg.append(f'<rect x="{sx(person["scene_x"] - 0.035)}" y="{sy(person["foot_y"] - 0.002)}" width="{sx(0.07) - sx(0)}" height="7" fill="#9a7a54" stroke="#4b3a30" stroke-width="1"/>')
-            draw_person(svg, person["scene_x"], person["foot_y"], person["color"])
-            svg.append(f'<line x1="{sx(person["scene_x"])}" y1="{sy(person["head_y"] + 0.02)}" x2="{sx(person["label_x"])}" y2="{sy(person["label_y"] - 0.02)}" stroke="#8d877d" stroke-width="1" stroke-dasharray="4,4"/>')
-            svg.append(f'<text x="{sx(person["label_x"])}" y="{sy(person["label_y"])}" font-size="14" font-weight="700" text-anchor="{person["label_anchor"]}" fill="{person["color"]}">{escape(person["member"])}</text>')
-            svg.append(f'<text x="{sx(person["label_x"])}" y="{sy(person["label_y"]) + 18}" font-size="12" text-anchor="{person["label_anchor"]}" fill="{person["color"]}">{person["bias_gap"]:+.2f}</text>')
-
-        svg.append(f'<line x1="{sx(0.29)}" y1="{sy(0.64)}" x2="{sx(0.82)}" y2="{sy(0.64)}" stroke="#403d39" stroke-width="2"/>')
-        svg.append(f'<polygon points="{sx(0.29)},{sy(0.64)} {sx(0.305)},{sy(0.648)} {sx(0.305)},{sy(0.632)}" fill="#403d39"/>')
-        svg.append(f'<polygon points="{sx(0.82)},{sy(0.64)} {sx(0.805)},{sy(0.648)} {sx(0.805)},{sy(0.632)}" fill="#403d39"/>')
-        svg.append(f'<text x="{sx(0.555)}" y="{sy(0.68)}" font-size="15" font-weight="700" text-anchor="middle" fill="#403d39">Bias gap = Tourism sentiment minus Fishing sentiment</text>')
-        svg.append(f'<text x="{sx(0.17)}" y="{sy(0.58)}" font-size="13" fill="{CATEGORY_COLORS["Fishing"]}">warmer to fishing</text>')
-        svg.append(f'<text x="{sx(0.79)}" y="{sy(0.58)}" font-size="13" fill="{CATEGORY_COLORS["Tourism"]}">warmer to tourism</text>')
-        svg.append(f'<text x="{sx(0.055)}" y="{sy(0.94)}" font-size="30" font-weight="700" fill="#202020">From Boat to Beach: Where Members Lean</text>')
-        svg.append(f'<text x="{sx(0.055)}" y="{sy(0.89)}" font-size="17" fill="#202020">Source: {escape(c2_selected_source)} | Filter: {escape(c2_member_label)}</text>')
-        svg.append(f'<rect x="{sx(0.11)}" y="{sy(0.145)}" width="110" height="30" rx="8" ry="8" fill="{CATEGORY_COLORS["Fishing"]}"/>')
-        svg.append(f'<text x="{sx(0.165)}" y="{sy(0.125)}" font-size="13" font-weight="700" text-anchor="middle" fill="white">Fishing boat</text>')
-        svg.append(f'<rect x="{sx(0.82)}" y="{sy(0.145)}" width="120" height="30" rx="8" ry="8" fill="{CATEGORY_COLORS["Tourism"]}"/>')
-        svg.append(f'<text x="{sx(0.88)}" y="{sy(0.125)}" font-size="13" font-weight="700" text-anchor="middle" fill="white">Tourist shore</text>')
-        svg.append(f'<text x="{sx(0.055)}" y="{sy(0.02)}" font-size="11" fill="#2c2c2c">Placement uses tourism minus fishing allocated hours from the filtered trip data. Hybrid time contributes half to each side.</text>')
-        if not people:
-            svg.append(f'<text x="{scene_width / 2:.1f}" y="{scene_height / 2:.1f}" text-anchor="middle" font-size="22" fill="#6b7280">No member data after current filters</text>')
-        svg.append("</svg>")
-        return "".join(svg)
-    return
-
-
-@app.cell
-def _(
-    CATEGORY_COLORS,
-    CATEGORY_ORDER,
-    CATEGORY_STROKES,
-    ZONE_COLORS,
-    c2_filtered_visits,
-    c2_member_label,
-    c2_selected_source,
-    escape,
-    math,
-    source_data,
-):
-    def render_visit_map():
-        map_width = 980
-        map_height = 620
-        margin = 70
-
-        all_places = source_data[c2_selected_source]["places"]
-        x_min = min(place["x"] for place in all_places)
-        x_max = max(place["x"] for place in all_places)
-        y_min = min(place["y"] for place in all_places)
-        y_max = max(place["y"] for place in all_places)
-
-        def to_screen(x_value, y_value):
-            if x_max == x_min:
-                screen_x = map_width / 2
-            else:
-                screen_x = margin + ((x_value - x_min) / (x_max - x_min)) * (map_width - 2 * margin)
-
-            if y_max == y_min:
-                screen_y = map_height / 2
-            else:
-                screen_y = map_height - margin - ((y_value - y_min) / (y_max - y_min)) * (map_height - 2 * margin)
-
-            return screen_x, screen_y
-
-        grouped_places = {}
-        for visit in c2_filtered_visits:
-            place_id = str(visit["place_id"])
-            if place_id not in grouped_places:
-                grouped_places[place_id] = {
-                    "name": visit["name"],
-                    "x": visit["x"],
-                    "y": visit["y"],
-                    "zone": visit["zone"],
-                    "zone_remapped": visit["zone_remapped"],
-                    "category": visit["category"],
-                    "visits": 0,
-                    "hours": 0.0,
-                    "members": set(),
-                    "trips": set(),
-                }
-            grouped_places[place_id]["visits"] += 1
-            grouped_places[place_id]["hours"] += float(visit["duration_hours"])
-            grouped_places[place_id]["members"].add(visit["member"])
-            grouped_places[place_id]["trips"].add(visit["trip_id"])
-
-        short_label = c2_member_label if len(c2_member_label) <= 80 else c2_member_label[:77] + "..."
-        svg = []
-        svg.append(f'<svg xmlns="http://www.w3.org/2000/svg" width="{map_width}" height="{map_height}" viewBox="0 0 {map_width} {map_height}">')
-        svg.append(f'<rect x="0" y="0" width="{map_width}" height="{map_height}" fill="#faf7f2" rx="18" ry="18"/>')
-        svg.append('<text x="36" y="42" font-size="28" font-weight="700" fill="#203040">Board visit map</text>')
-        svg.append(f'<text x="36" y="68" font-size="14" fill="#5f6b76">Source: {escape(c2_selected_source)} | Filter: {escape(short_label)}</text>')
-        svg.append('<text x="36" y="90" font-size="13" fill="#6d6d6d">Faint dots show raw place zones. Larger colored circles use the remapped fishing/tourism categories.</text>')
-
-        for place in all_places:
-            sx, sy = to_screen(place["x"], place["y"])
-            zone_fill = ZONE_COLORS.get(place["zone"], ZONE_COLORS["unknown"])
-            place_title = escape(
-                f'{place["name"]}\n'
-                f'Raw zone: {place["zone"]}\n'
-                f'Remapped zone: {place["zone_remapped"]}\n'
-                f'Category: {place["category"]}\n'
-                f'Method: {place["remap_method"]}'
-            )
-            svg.append(f'<circle cx="{sx:.1f}" cy="{sy:.1f}" r="3.5" fill="{zone_fill}" opacity="0.25"><title>{place_title}</title></circle>')
-
-        for category_name in CATEGORY_ORDER:
-            category_places = [place for place in grouped_places.values() if place["category"] == category_name]
-            for place in sorted(category_places, key=lambda item: item["visits"]):
-                sx, sy = to_screen(place["x"], place["y"])
-                radius = 6 + math.sqrt(place["visits"]) * 3.0
-                fill_color = CATEGORY_COLORS[category_name]
-                stroke_color = CATEGORY_STROKES[category_name]
-                opacity = "0.88" if category_name != "Neutral" else "0.48"
-                members_text = ", ".join(sorted(place["members"]))
-                hover_title = escape(
-                    f'{place["name"]}\n'
-                    f'Category: {category_name}\n'
-                    f'Member-visits: {place["visits"]}\n'
-                    f'Trips touching this place: {len(place["trips"])}\n'
-                    f'Allocated hours: {place["hours"]:.2f}\n'
-                    f'Raw zone: {place["zone"]}\n'
-                    f'Remapped zone: {place.get("zone_remapped", place["zone"])}\n'
-                    f'Members: {members_text}'
-                )
-                svg.append(
-                    f'<circle cx="{sx:.1f}" cy="{sy:.1f}" r="{radius:.1f}" fill="{fill_color}" fill-opacity="{opacity}" stroke="{stroke_color}" stroke-width="2"><title>{hover_title}</title></circle>'
-                )
-                if place["visits"] >= 4:
-                    label = place["name"] if len(place["name"]) <= 18 else place["name"][:15] + "..."
-                    svg.append(f'<text x="{sx:.1f}" y="{sy - radius - 8:.1f}" font-size="11" text-anchor="middle" fill="#334155">{escape(label)}</text>')
-
-        legend_x = map_width - 190
-        legend_y = 120
-        svg.append(f'<rect x="{legend_x - 18}" y="{legend_y - 28}" width="170" height="150" rx="12" ry="12" fill="white" opacity="0.92" stroke="#d7d2c8"/>')
-        svg.append(f'<text x="{legend_x}" y="{legend_y - 6}" font-size="14" font-weight="700" fill="#334155">Legend</text>')
-        for index, category_name in enumerate(CATEGORY_ORDER):
-            legend_row_y = legend_y + 24 + index * 24
-            svg.append(f'<circle cx="{legend_x}" cy="{legend_row_y}" r="7" fill="{CATEGORY_COLORS[category_name]}" stroke="{CATEGORY_STROKES[category_name]}" stroke-width="1.5"/>')
-            svg.append(f'<text x="{legend_x + 16}" y="{legend_row_y + 4}" font-size="12" fill="#475569">{category_name}</text>')
-        svg.append(f'<text x="{legend_x}" y="{legend_y + 126}" font-size="11" fill="#6b7280">circle size = repeated visits</text>')
-
-        if not c2_filtered_visits:
-            svg.append(f'<text x="{map_width / 2:.1f}" y="{map_height / 2:.1f}" text-anchor="middle" font-size="20" fill="#6b7280">No visit records after current filters</text>')
-
-        svg.append("</svg>")
-        return "".join(svg)
-    return
-
-
-@app.cell
-def _(
-    CATEGORY_COLORS,
-    CATEGORY_ORDER,
-    CATEGORY_STROKES,
-    c2_filtered_visits,
-    c2_include_neutral,
-    c2_member_label,
-    c2_selected_source,
-    defaultdict,
-    dominant_time_category,
-    escape,
-    math,
-    summarize_category_hours,
-):
-    def render_trip_summary():
-        width = 980
-        height = 620
-        trip_center_x = 690
-        trip_center_y = 330
-        trip_outer_radius = 170
-        trip_inner_radius = 70
-
-        total_hours = summarize_category_hours(c2_filtered_visits)
-        summary_labels = [
-            category_name
-            for category_name in CATEGORY_ORDER
-            if total_hours.get(category_name, 0.0) > 0 and (c2_include_neutral or category_name != "Neutral")
-        ]
-        if not summary_labels:
-            summary_labels = ["Neutral"]
-
-        summary_values = [total_hours.get(category_name, 0.0) for category_name in summary_labels]
-        if sum(summary_values) <= 0:
-            summary_values = [1.0 for _ in summary_labels]
-
-        trip_rollup = {}
-        for visit in c2_filtered_visits:
-            key = (str(visit["member"]), str(visit["trip_id"]))
-            if key not in trip_rollup:
-                trip_rollup[key] = {
-                    "member": visit["member"],
-                    "trip_id": visit["trip_id"],
-                    "date": visit["date"],
-                    "start_dt": visit["start_dt"],
-                    "hours": 0.0,
-                    "category_hours": defaultdict(float),
-                    "places": set(),
-                }
-            trip_rollup[key]["hours"] += float(visit["duration_hours"])
-            trip_rollup[key]["category_hours"][str(visit["category"])] += float(visit["duration_hours"])
-            trip_rollup[key]["places"].add(str(visit["name"]))
-
-        trip_records = []
-        for record in trip_rollup.values():
-            trip_records.append(
-                {
-                    "member": str(record["member"]),
-                    "trip_id": str(record["trip_id"]),
-                    "date": str(record["date"]),
-                    "start_dt": record["start_dt"],
-                    "hours": float(record["hours"]),
-                    "category": dominant_time_category(dict(record["category_hours"])),
-                    "places": ", ".join(sorted(record["places"])),
-                }
-            )
-        trip_records.sort(key=lambda record: (record["start_dt"], record["member"], record["trip_id"]))
-
-        def polar_point(cx, cy, radius, angle_deg):
-            angle_rad = math.radians(angle_deg - 90)
-            return cx + radius * math.cos(angle_rad), cy + radius * math.sin(angle_rad)
-
-        def arc_wedge_path(cx, cy, r_outer, r_inner, start_angle, end_angle):
-            x1, y1 = polar_point(cx, cy, r_outer, start_angle)
-            x2, y2 = polar_point(cx, cy, r_outer, end_angle)
-            x3, y3 = polar_point(cx, cy, r_inner, end_angle)
-            x4, y4 = polar_point(cx, cy, r_inner, start_angle)
-            large_arc = 1 if (end_angle - start_angle) > 180 else 0
-            return (
-                f"M {x1:.2f} {y1:.2f} "
-                f"A {r_outer:.2f} {r_outer:.2f} 0 {large_arc} 1 {x2:.2f} {y2:.2f} "
-                f"L {x3:.2f} {y3:.2f} "
-                f"A {r_inner:.2f} {r_inner:.2f} 0 {large_arc} 0 {x4:.2f} {y4:.2f} Z"
-            )
-
-        svg = []
-        svg.append(f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">')
-        svg.append(f'<rect x="0" y="0" width="{width}" height="{height}" fill="#fbfaf7" rx="20" ry="20"/>')
-        svg.append('<text x="36" y="42" font-size="28" font-weight="700" fill="#203040">Trip-time summary</text>')
-        svg.append(f'<text x="36" y="68" font-size="14" fill="#5f6b76">Source: {escape(c2_selected_source)} | Filter: {escape(c2_member_label)}</text>')
-        svg.append('<text x="36" y="90" font-size="13" fill="#6d6d6d">Left: overall time split. Right: each member-trip shown as a clockwise wedge.</text>')
-
-        pie_center_x = 220
-        pie_center_y = 330
-        pie_outer = 120
-        pie_inner = 58
-        total_sum = sum(summary_values)
-        current_angle = 0.0
-        for label, value in zip(summary_labels, summary_values):
-            width_angle = 360.0 * value / total_sum
-            path = arc_wedge_path(pie_center_x, pie_center_y, pie_outer, pie_inner, current_angle, current_angle + width_angle)
-            svg.append(f'<path d="{path}" fill="{CATEGORY_COLORS[label]}" stroke="white" stroke-width="2"/>')
-            mid_angle = current_angle + width_angle / 2.0
-            label_x, label_y = polar_point(pie_center_x, pie_center_y, 145, mid_angle)
-            pct = 100.0 * value / total_sum
-            svg.append(f'<text x="{label_x:.1f}" y="{label_y:.1f}" font-size="12" text-anchor="middle" fill="#334155">{label}</text>')
-            svg.append(f'<text x="{label_x:.1f}" y="{label_y + 15:.1f}" font-size="11" text-anchor="middle" fill="#64748b">{pct:.0f}%</text>')
-            current_angle += width_angle
-        svg.append(f'<text x="{pie_center_x}" y="{pie_center_y - 6}" font-size="16" font-weight="700" text-anchor="middle" fill="#334155">total</text>')
-        svg.append(f'<text x="{pie_center_x}" y="{pie_center_y + 16}" font-size="13" text-anchor="middle" fill="#64748b">allocated hours</text>')
-
-        trip_total_hours = sum(record["hours"] for record in trip_records) or 1.0
-        ring_angle = 0.0
-        for record in trip_records:
-            width_angle = max(record["hours"] / trip_total_hours * 360.0, 2.0)
-            path = arc_wedge_path(trip_center_x, trip_center_y, trip_outer_radius, trip_inner_radius, ring_angle, ring_angle + width_angle)
-            fill_color = CATEGORY_COLORS.get(record["category"], CATEGORY_COLORS["Neutral"])
-            hover_title = escape(
-                f'{record["trip_id"]}\n'
-                f'Member: {record["member"]}\n'
-                f'Date: {record["date"]}\n'
-                f'Hours: {record["hours"]:.2f}\n'
-                f'Category: {record["category"]}\n'
-                f'Places: {record["places"]}'
-            )
-            svg.append(f'<path d="{path}" fill="{fill_color}" fill-opacity="0.88" stroke="white" stroke-width="2"><title>{hover_title}</title></path>')
-            if width_angle >= 12:
-                mid_angle = ring_angle + width_angle / 2.0
-                text_x, text_y = polar_point(
-                    trip_center_x,
-                    trip_center_y,
-                    (trip_outer_radius + trip_inner_radius) / 2.0,
-                    mid_angle,
-                )
-                svg.append(f'<text x="{text_x:.1f}" y="{text_y:.1f}" font-size="10" text-anchor="middle" fill="white">{escape(record["trip_id"])}</text>')
-            ring_angle += width_angle
-
-        svg.append(f'<circle cx="{trip_center_x}" cy="{trip_center_y}" r="{trip_inner_radius - 8}" fill="#fbfaf7" stroke="#e5ded1" stroke-width="1.5"/>')
-        svg.append(f'<text x="{trip_center_x}" y="{trip_center_y - 5}" font-size="16" font-weight="700" text-anchor="middle" fill="#334155">member-</text>')
-        svg.append(f'<text x="{trip_center_x}" y="{trip_center_y + 15}" font-size="16" font-weight="700" text-anchor="middle" fill="#334155">trips</text>')
-
-        legend_x = 835
-        legend_y = 150
-        svg.append(f'<rect x="{legend_x - 20}" y="{legend_y - 30}" width="145" height="140" rx="12" ry="12" fill="white" opacity="0.92" stroke="#d7d2c8"/>')
-        svg.append(f'<text x="{legend_x}" y="{legend_y - 8}" font-size="14" font-weight="700" fill="#334155">Legend</text>')
-        for index, category_name in enumerate(CATEGORY_ORDER):
-            legend_row_y = legend_y + 20 + index * 24
-            svg.append(f'<circle cx="{legend_x}" cy="{legend_row_y}" r="7" fill="{CATEGORY_COLORS[category_name]}" stroke="{CATEGORY_STROKES[category_name]}" stroke-width="1.5"/>')
-            svg.append(f'<text x="{legend_x + 16}" y="{legend_row_y + 4}" font-size="12" fill="#475569">{category_name}</text>')
-        svg.append('<text x="36" y="586" font-size="11" fill="#6b7280">Each wedge on the right is one member-trip ordered clockwise by trip start time.</text>')
-
-        if not trip_records:
-            svg.append(f'<text x="{width / 2:.1f}" y="{height / 2:.1f}" text-anchor="middle" font-size="22" fill="#6b7280">No trip data after current filters</text>')
-
-        svg.append("</svg>")
-        return "".join(svg)
     return
 
 
@@ -2089,7 +1434,6 @@ def _(mo):
     - Trip duration comes from Graph 2's prepared `time_spend` column rather than being recalculated in this notebook.
     """)
     return
-
 
 if __name__ == "__main__":
     app.run()
