@@ -1980,28 +1980,6 @@ def _(
         # C7: trip-time summary.
         time_x, time_y, time_w, time_h = 625, 335, 500, 420
         draw_panel(svg, time_x, time_y, time_w, time_h, "C7", "trip time split")
-        line_y = time_y + 82
-        svg.append(
-            f'<line x1="{time_x + 58}" y1="{line_y}" x2="{time_x + time_w - 52}" y2="{line_y}" stroke="{ink}" stroke-width="1.2"/>'
-        )
-        if trip_records:
-            tick_records = trip_records
-            step = max(1, len(tick_records) // 28)
-            visible_ticks = tick_records[::step][:29]
-            for index, record in enumerate(visible_ticks):
-                tx = time_x + 58 + index * (time_w - 110) / max(1, len(visible_ticks) - 1)
-                color = CATEGORY_COLORS.get(record["category"], CATEGORY_COLORS["Neutral"])
-                tick_h = 10 + min(24, record["hours"] * 1.3)
-                svg.append(
-                    f'<line class="c2-mark c2-control" data-filter-type="member" data-filter-value="{slug(record["member"])}" '
-                    f'data-member="{slug(record["member"])}" data-category="{slug(record["category"])}" '
-                    f'x1="{tx:.1f}" y1="{line_y - tick_h:.1f}" x2="{tx:.1f}" y2="{line_y + tick_h:.1f}" '
-                    f'stroke="{color}" stroke-width="2" stroke-linecap="round">'
-                    f'<title>{escape(record["trip_id"] + " | " + record["member"] + " | " + record["category"])}\nClick to highlight this member.</title></line>'
-                )
-            svg.append(
-                f'<text x="{time_x + 60}" y="{line_y - 34}" font-size="10" fill="{soft_ink}">trip order</text>'
-            )
 
         donut_cx, donut_cy = time_x + 250, time_y + 255
         inner_outer = 82
