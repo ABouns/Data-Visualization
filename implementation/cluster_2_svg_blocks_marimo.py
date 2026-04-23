@@ -1439,6 +1439,17 @@ def _(
         draw_panel(svg, top_x, top_y, top_w, top_h, "C5", "shoreline bias")
         water_y = top_y + 182
         shoreline_x = top_x + 680
+
+        def shore_ground_y(x):
+            flat_shore_y = top_y + 124
+            if x >= shoreline_x + 92:
+                return flat_shore_y
+            if x <= shoreline_x:
+                return water_y
+            progress = (x - shoreline_x) / 92
+            eased = progress * progress * (3 - 2 * progress)
+            return water_y + (flat_shore_y - water_y) * eased
+
         svg.append(
             f'<rect x="{top_x + 1}" y="{top_y + 32}" width="{top_w - 2}" height="{top_h - 33}" fill="url(#c2-sky-grad)" opacity="0.96"/>'
         )
@@ -1516,6 +1527,8 @@ def _(
                 x = top_x + 185 + (person["bias_gap"] - bias_min) * (top_w - 355) / (bias_max - bias_min)
             x = clip(x, top_x + 145, top_x + top_w - 145)
             y = top_y + 104 - (index % 3) * 8
+            if x >= shoreline_x + 18:
+                y = shore_ground_y(x) - 6
             if person["bias_gap"] < 0:
                 color = blend_hex("#6e6e6e", CATEGORY_COLORS["Fishing"], abs(person["bias_gap"]) / max_abs_bias)
             else:
