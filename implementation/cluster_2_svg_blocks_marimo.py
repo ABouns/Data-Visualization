@@ -1599,6 +1599,8 @@ def _(
         draw_panel(svg, top_x, top_y, top_w, top_h, "C5", "shoreline bias")
         water_y = top_y + 182
         shoreline_x = top_x + 680
+        umbrella_cx = top_x + top_w - 153
+        umbrella_ground_y = top_y + 184
 
         def shore_ground_y(x):
             flat_shore_y = top_y + 124
@@ -1658,14 +1660,14 @@ def _(
         )
         svg.append(
             f'<g filter="url(#c2-soft-shadow)">'
-            f'<path d="M {top_x + top_w - 215} {top_y + 138} C {top_x + top_w - 187} {top_y + 80}, '
-            f'{top_x + top_w - 118} {top_y + 80}, {top_x + top_w - 91} {top_y + 138} Z" '
+            f'<path d="M {umbrella_cx - 48} {top_y + 136} C {umbrella_cx - 27} {top_y + 92}, '
+            f'{umbrella_cx + 26} {top_y + 92}, {umbrella_cx + 48} {top_y + 136} Z" '
             'fill="#ef5350" stroke="#8b2b29" stroke-width="1.2"/>'
-            f'<path d="M {top_x + top_w - 153} {top_y + 138} C {top_x + top_w - 155} {top_y + 104}, '
-            f'{top_x + top_w - 154} {top_y + 87}, {top_x + top_w - 153} {top_y + 82}" '
+            f'<path d="M {umbrella_cx} {top_y + 136} C {umbrella_cx - 2} {top_y + 112}, '
+            f'{umbrella_cx - 1} {top_y + 97}, {umbrella_cx} {top_y + 94}" '
             'fill="none" stroke="#8b2b29" stroke-width="1"/>'
-            f'<line x1="{top_x + top_w - 153}" y1="{top_y + 138}" x2="{top_x + top_w - 153}" y2="{top_y + 178}" stroke="#8a6f3f" stroke-width="2"/>'
-            f'<rect x="{top_x + top_w - 194}" y="{top_y + 178}" width="76" height="9" rx="4" fill="#f0f5f7" stroke="#8ea0aa" stroke-width="1"/>'
+            f'<line x1="{umbrella_cx}" y1="{top_y + 136}" x2="{umbrella_cx}" y2="{umbrella_ground_y}" stroke="#8a6f3f" stroke-width="2"/>'
+            f'<rect x="{umbrella_cx - 38}" y="{umbrella_ground_y}" width="76" height="9" rx="4" fill="#f0f5f7" stroke="#8ea0aa" stroke-width="1"/>'
             '</g>'
         )
         svg.append(
@@ -1688,7 +1690,8 @@ def _(
             x = clip(x, top_x + 145, top_x + top_w - 145)
             y = top_y + 104 - (index % 3) * 8
             if x >= shoreline_x + 18:
-                y = shore_ground_y(x) - 6
+                x = umbrella_cx + (index % 3 - 1) * 22
+                y = umbrella_ground_y - 6
             if person["bias_gap"] < 0:
                 color = blend_hex("#6e6e6e", CATEGORY_COLORS["Fishing"], abs(person["bias_gap"]) / max_abs_bias)
             else:
