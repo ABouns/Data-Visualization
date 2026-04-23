@@ -45,9 +45,12 @@ def _(mo):
 
 @app.cell
 def _(Path):
-    DEFAULT_ROOT = Path("/Users/bouns/g0r72a_data_peiyang_2526")
+    try:
+        GRAPH2_DATA_DIR = Path(__file__).resolve().parent / "data"
+    except NameError:
+        GRAPH2_DATA_DIR = Path.cwd() / "data"
 
-    SOURCE_NAMES = ("Journalist", "Government")
+    SOURCE_NAMES = ("Graph 2 prepared data",)
     CATEGORY_ORDER = ("Fishing", "Tourism", "Hybrid", "Neutral")
 
     CATEGORY_COLORS = {
@@ -123,8 +126,8 @@ def _(Path):
         CATEGORY_COLORS,
         CATEGORY_ORDER,
         CATEGORY_STROKES,
-        DEFAULT_ROOT,
         FISHING_TOPICS,
+        GRAPH2_DATA_DIR,
         HYBRID_TOPICS,
         SOURCE_NAMES,
         TOURISM_TOPICS,
@@ -142,6 +145,7 @@ def _(
     csv,
     datetime,
     defaultdict,
+    json,
     math,
     timedelta,
 ):
@@ -161,6 +165,51 @@ def _(
     def read_rows(path):
         with path.open(newline="", encoding="utf-8") as handle:
             return list(csv.DictReader(handle))
+
+    def read_column_json(path):
+        with path.open(encoding="utf-8") as handle:
+            columns = json.load(handle)
+        row_ids = sorted(
+            {row_id for values in columns.values() for row_id in values},
+            key=lambda value: int(value) if str(value).isdigit() else str(value),
+        )
+        return [
+            {column_name: values.get(row_id) for column_name, values in columns.items()}
+            for row_id in row_ids
+        ]
+
+    def parse_graph2_timestamp(value):
+        if isinstance(value, (int, float)):
+            return datetime.fromtimestamp(value / 1000)
+        text = str(value or "").strip()
+        if text.isdigit():
+            return datetime.fromtimestamp(int(text) / 1000)
+        if text:
+            try:
+                return datetime.fromisoformat(text.replace("Z", "+00:00"))
+            except ValueError:
+                pass
+        return datetime(2040, 1, 1)
+
+    def parse_time_spend_hours(value):
+        if value is None:
+            return 0.0
+        if isinstance(value, (int, float)):
+            return float(value) / 3_600_000
+        text = str(value).strip()
+        if not text:
+            return 0.0
+        if "days" in text:
+            day_text, time_text = text.split("days", 1)
+            days = float(day_text.strip() or 0)
+            text = time_text.strip()
+        else:
+            days = 0.0
+        parts = [float(part) for part in text.split(":")]
+        while len(parts) < 3:
+            parts.insert(0, 0.0)
+        hours, minutes, seconds = parts[-3:]
+        return days * 24 + hours + minutes / 60 + seconds / 3600
 
     def classify_topic(topic_id):
         if topic_id in FISHING_TOPICS:
@@ -441,7 +490,118 @@ def _(
             "places": all_places,
             "visit_rows": visit_rows,
         }
-    return dominant_time_category, load_source, summarize_category_hours
+
+    def load_graph2_source(data_dir, source_name, remap_k=5, remap_radius_km=1.5):
+        places_edited = read_column_json(data_dir / "places_edited.json")
+        time_trip_spend = read_column_json(data_dir / "time_trip_spend.json")
+
+        graph2_places = []
+        edited_lookup = {}
+        for row in places_edited:
+            place_id = str(row["place_id"])
+            zone = str(row.get("zone") or "unknown").strip().lower()
+            place_record = {
+                "place_id": place_id,
+                "name": place_id,
+                "lat": float(row["lat"]),
+                "lon": float(row["lon"]),
+                "x": float(row["lat"]),
+                "y": float(row["lon"]),
+                "zone": zone,
+                "zone_remapped": zone,
+                "zone_detail": "",
+                "category": category_from_zone(zone),
+                "remap_method": "Graph 2 edited place zone",
+                "remap_score": None,
+            }
+            graph2_places.append(place_record)
+            edited_lookup[place_id] = place_record
+
+        predictions = classify_weighted_knn_places(
+            graph2_places,
+            k=remap_k,
+            max_radius_km=remap_radius_km,
+        )
+
+        remapped_location = {}
+        for place in graph2_places:
+            if place["zone"] in {"industrial", "tourism"}:
+                remapped_location[place["place_id"]] = {
+                    "zone": place["zone"],
+                    "method": "Graph 2 edited place zone",
+                    "score": None,
+                }
+        for place_id, prediction in predictions.items():
+            remapped_location[place_id] = {
+                "zone": prediction["zone"],
+                "method": "Graph 2 weighted nearest-neighbor remap",
+                "score": prediction["score"],
+            }
+
+        places_by_id = {}
+        visit_rows = []
+        for row in time_trip_spend:
+            place_id = str(row["place_id"])
+            edited_place = edited_lookup.get(place_id)
+            remap = remapped_location.get(place_id)
+            raw_zone = str(row.get("zone") or (edited_place or {}).get("zone") or "unknown").strip().lower()
+            zone_remapped = remap["zone"] if remap else "other"
+            category = category_from_zone(zone_remapped)
+            lat = float(row.get("lat") if row.get("lat") is not None else edited_place["lat"])
+            lon = float(row.get("lon") if row.get("lon") is not None else edited_place["lon"])
+            name = str(row.get("name") or place_id)
+            zone_detail = str(row.get("zone_detail") or "")
+
+            if place_id not in places_by_id:
+                places_by_id[place_id] = {
+                    "place_id": place_id,
+                    "name": name,
+                    "lat": lat,
+                    "lon": lon,
+                    "x": lat,
+                    "y": lon,
+                    "zone": raw_zone,
+                    "zone_remapped": zone_remapped,
+                    "zone_detail": zone_detail,
+                    "category": category,
+                    "remap_method": remap["method"] if remap else "Graph 2 merge: no fishing/tourism remap",
+                    "remap_score": remap["score"] if remap else None,
+                }
+
+            start_dt = parse_graph2_timestamp(row.get("start_time"))
+            end_dt = parse_graph2_timestamp(row.get("end_time"))
+            if end_dt < start_dt:
+                end_dt += timedelta(days=1)
+
+            visit_rows.append(
+                {
+                    "source": source_name,
+                    "trip_id": str(row["trip_id"]),
+                    "date": str(row.get("date") or start_dt.date()),
+                    "start_dt": start_dt,
+                    "end_dt": end_dt,
+                    "member": str(row.get("people_id") or "Unknown"),
+                    "place_id": place_id,
+                    "name": name,
+                    "x": lat,
+                    "y": lon,
+                    "zone": raw_zone,
+                    "zone_remapped": zone_remapped,
+                    "zone_detail": zone_detail,
+                    "category": category,
+                    "remap_method": remap["method"] if remap else "Graph 2 merge: no fishing/tourism remap",
+                    "remap_score": remap["score"] if remap else None,
+                    "duration_hours": parse_time_spend_hours(row.get("time_spend")),
+                }
+            )
+
+        return {
+            "name": source_name,
+            "people_names": sorted({row["member"] for row in visit_rows}),
+            "places": sorted(places_by_id.values(), key=lambda place: place["name"]),
+            "visit_rows": visit_rows,
+        }
+    return dominant_time_category, load_graph2_source, summarize_category_hours
 
 
 @app.cell
@@ -467,15 +627,15 @@ def _(mo):
 
 @app.cell
 def _(
-    DEFAULT_ROOT,
+    GRAPH2_DATA_DIR,
     SOURCE_NAMES,
-    load_source,
+    load_graph2_source,
     remap_distance_widget,
     remap_neighbor_widget,
 ):
     source_data = {
-        source_name: load_source(
-            DEFAULT_ROOT,
+        source_name: load_graph2_source(
+            GRAPH2_DATA_DIR,
             source_name,
             remap_k=remap_neighbor_widget.value,
             remap_radius_km=remap_distance_widget.value,
@@ -494,10 +654,10 @@ def _(
 
 
 @app.cell
-def _(all_members, mo):
+def _(SOURCE_NAMES, all_members, mo):
     source_widget = mo.ui.dropdown(
-        options=["Journalist", "Government"],
-        value="Journalist",
+        options=list(SOURCE_NAMES),
+        value=SOURCE_NAMES[0],
         label="Source",
     )
 
@@ -1942,10 +2102,10 @@ def _(mo):
     mo.md("""
     ## Notes
 
-    - Place labels use the Graph 2 preparation: manual zone fixes first, then weighted nearest-neighbor remapping for commercial/residential places.
+    - Data loading builds on `graph2.py`: `places_edited.json` and `time_trip_spend.json` are loaded from `implementation/data`.
+    - Place labels use the Graph 2 preparation: edited place zones first, then weighted nearest-neighbor remapping for commercial/residential places.
     - Remapped `industrial` places are shown as Fishing; remapped `tourism` places are shown as Tourism.
-    - Trip time is allocated with half the gap before and half the gap after each timestamp in `trip_places.csv`.
-    - The first and last stops receive the remaining gap to the trip start/end.
+    - Trip duration comes from Graph 2's prepared `time_spend` column rather than being recalculated in this notebook.
     """)
     return
 
