@@ -85,3 +85,7 @@ class Rect(_Element):
 class Text(_Element):
     tag = "text"
     self_closing = False
+
+class Title(_Element):
+    tag = "title"
+    self_closing = False

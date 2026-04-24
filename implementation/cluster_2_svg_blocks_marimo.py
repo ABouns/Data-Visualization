@@ -304,7 +304,6 @@ def _(mo, pd, time_trip_spend):
         value=(0, num_days - 1),
         label="Filter Date Range",
     )
-
     return (
         date_slider,
         knn_dist_slider,
@@ -373,15 +372,15 @@ def _(graph_2_1_data):
 
 
 @app.cell
-def _(graph_2_1_data):
-    graph_2_1_data.to_json("data/graph_2_1_data.json")
+def _(graph_2_1_data, mo):
+    graph_2_1_data.to_json(mo.notebook_location() / "data" / "graph_2_1_data.json")
     return
 
 
 @app.cell
-def _(json):
+def _(json, mo):
     try:
-        with open("data/oceanus_map.geojson", "r") as f:
+        with open(mo.notebook_location() / "data" / "oceanus_map.geojson", "r") as f:
             oceanus_geojson = json.load(f)
     except:
         # Fallback or error
@@ -609,15 +608,13 @@ def _(svg):
             elements=elements,
         )
 
-    return draw_boat, draw_person, draw_rowboat, draw_umbrella
+    return draw_person, draw_rowboat
 
 
 @app.cell
 def _(
-    draw_boat,
-    draw_rowboat,
     draw_person,
-    draw_umbrella,
+    draw_rowboat,
     graph_2_1_data,
     graph_2_2_data,
     math,
@@ -765,8 +762,7 @@ def _(
                 rx=10,
             )
         )
-        els.append(svg.Text(x=c5_x + 16, y=c5_y + 23, text="C5", class_="c5-code"))
-        els.append(svg.Text(x=c5_x + 54, y=c5_y + 23, text="shoreline bias", class_="c5-title"))
+        els.append(svg.Text(x=c5_x + 16, y=c5_y + 23, text="Shoreline bias", class_="c5-title"))
         els.append(
             svg.Text(
                 x=c5_x + c5_w - 16,
@@ -796,9 +792,38 @@ def _(
         scene_bottom = scene_top + scene_h
         sea_level = scene_top + 61
         sand_line_y = scene_bottom - 14
-        border_x = scene_x + ((0 - min_d) / range_d) * scene_w
-        shore_start_x = clamp(border_x + 64, scene_x + 560, scene_x + scene_w - 260)
-        shore_end_x = clamp(border_x + 138, shore_start_x + 86, scene_x + scene_w - 92)
+        border_x = scene_x + scene_w - ((0 - min_d) / range_d) * scene_w
+
+        members = []
+        for _, row in data_c5.iterrows():
+            val = row[pos_col]
+            x = scene_x + scene_w - ((val - min_d) / range_d) * scene_w
+            members.append(
+                {
+                    "people_id": row["people_id"],
+                    "x": clamp(x, scene_x + 118, scene_x + scene_w - 102),
+                    "val": val,
+                }
+            )
+
+        water_members = [m for m in members if m["x"] < border_x]
+        shore_members = [m for m in members if m["x"] >= border_x]
+
+        water_groups = []
+        for member in water_members:
+            if not water_groups:
+                water_groups.append([member])
+                continue
+            prev = water_groups[-1]
+            if len(prev) < 2 and member["x"] - prev[-1]["x"] <= 72:
+                prev.append(member)
+            else:
+                water_groups.append([member])
+
+        min_boat_gap = 136
+        left_boat_limit = scene_x + 96
+        shore_start_x = border_x
+        shore_end_x = border_x
 
         els.append(
             svg.Rect(
@@ -836,24 +861,6 @@ def _(
             )
         )
         els.append(
-            svg.Text(
-                x=scene_x + 22,
-                y=sand_line_y - 8,
-                text="water",
-                text_anchor="start",
-                class_="c5-side-note",
-            )
-        )
-        els.append(
-            svg.Text(
-                x=scene_x + scene_w - 22,
-                y=sand_line_y - 8,
-                text="shore",
-                text_anchor="end",
-                class_="c5-side-note",
-            )
-        )
-        els.append(
             svg.Line(
                 x1=border_x,
                 y1=scene_top + 26,
@@ -875,33 +882,6 @@ def _(
         )
         els.append(svg.Circle(cx=scene_x + scene_w - 74, cy=scene_top + 43, r=27, fill="#efd695", opacity=0.9))
 
-        members = []
-        for _, row in data_c5.iterrows():
-            val = row[pos_col]
-            x = scene_x + ((val - min_d) / range_d) * scene_w
-            members.append(
-                {
-                    "people_id": row["people_id"],
-                    "x": clamp(x, scene_x + 118, scene_x + scene_w - 102),
-                }
-            )
-
-        water_members = [m for m in members if m["x"] < border_x]
-        shore_members = [m for m in members if m["x"] >= border_x]
-
-        water_groups = []
-        for member in water_members:
-            if not water_groups:
-                water_groups.append([member])
-                continue
-            prev = water_groups[-1]
-            if len(prev) < 2 and member["x"] - prev[-1]["x"] <= 72:
-                prev.append(member)
-            else:
-                water_groups.append([member])
-
-        min_boat_gap = 136
-        left_boat_limit = scene_x + 96
         right_boat_limit = shore_start_x - 62
         adjusted_centers = []
         for group in water_groups:
@@ -948,6 +928,7 @@ def _(
                         class_=f"clickable-person pid-{member['people_id'].replace(' ', '_')}",
                         style="cursor:pointer",
                         elements=[
+                            svg.Title(text=f"Delta: {member['val']:.2f}"),
                             svg.Circle(cx=px, cy=boat_y - 18, r=24, fill="#ffffff", opacity=0.01),
                             draw_person(px, boat_y - 1, 0.44, color="#d4944d", name=""),
                             svg.Text(
@@ -961,58 +942,58 @@ def _(
                     )
                 )
 
-        umbrella_x = scene_x + scene_w - 114
         if shore_members:
-            shore_positions = [
-                clamp(member["x"], border_x + 78, scene_x + scene_w - 188)
-                for member in shore_members
-            ]
-            shore_positions[-1] = umbrella_x
-            els.append(draw_umbrella(umbrella_x, sand_line_y + 1, 1.28, color="#f5cf7d", name=""))
-            els.append(
-                svg.Rect(
-                    x=umbrella_x - 31,
-                    y=sand_line_y + 3,
-                    width=62,
-                    height=9,
-                    rx=4.5,
-                    fill="#fdfefe",
-                    stroke="#c8d4de",
-                    stroke_width=1,
-                )
-            )
+            shore_groups = []
+            for member in shore_members:
+                if not shore_groups:
+                    shore_groups.append([member])
+                    continue
+                prev = shore_groups[-1]
+                if abs(member["val"] - prev[-1]["val"]) < 1e-6:
+                    prev.append(member)
+                else:
+                    shore_groups.append([member])
 
-            for idx, member in enumerate(shore_members):
-                px = shore_positions[idx]
-                label_y = label_levels[(idx + len(water_groups)) % len(label_levels)]
-                els.append(
-                    svg.Line(
-                        x1=px,
-                        y1=label_y + 5,
-                        x2=px,
-                        y2=sand_line_y - 17,
-                        stroke="#9eaab3",
-                        stroke_dasharray="4",
-                        stroke_width=1,
+            group_centers = []
+            for group in shore_groups:
+                cx = sum(m["x"] for m in group) / len(group)
+                cx = clamp(cx, shore_start_x + 24, scene_x + scene_w - 40)
+                group_centers.append(cx)
+
+            # Enforce 80px minimal spacing, working from right to left
+            for i in range(1, len(group_centers)):
+                group_centers[i] = min(group_centers[i], group_centers[i-1] - 80)
+
+            # If they got pushed past the left boundary (neutral axis), pull them back to the right
+            if group_centers and group_centers[-1] < shore_start_x + 24:
+                group_centers[-1] = shore_start_x + 24
+                for i in range(len(group_centers)-2, -1, -1):
+                    group_centers[i] = max(group_centers[i], group_centers[i+1] + 80)
+
+            for g_idx, group in enumerate(shore_groups):
+                px = group_centers[g_idx]
+                for m_idx, member in enumerate(group):
+                    member_y = sand_line_y - 1 - m_idx * 58
+                    label_y = member_y - 32
+
+                    els.append(
+                        svg.G(
+                            class_=f"clickable-person pid-{member['people_id'].replace(' ', '_')}",
+                            style="cursor:pointer",
+                            elements=[
+                                svg.Title(text=f"Delta: {member['val']:.2f}"),
+                                svg.Circle(cx=px, cy=member_y - 15, r=24, fill="#ffffff", opacity=0.01),
+                                draw_person(px, member_y, 0.52, color="#d4944d", name=""),
+                                svg.Text(
+                                    x=px,
+                                    y=label_y,
+                                    text=member["people_id"],
+                                    text_anchor="middle",
+                                    class_="c5-member-label",
+                                ),
+                            ],
+                        )
                     )
-                )
-                els.append(
-                    svg.G(
-                        class_=f"clickable-person pid-{member['people_id'].replace(' ', '_')}",
-                        style="cursor:pointer",
-                        elements=[
-                            svg.Circle(cx=px, cy=sand_line_y - 16, r=24, fill="#ffffff", opacity=0.01),
-                            draw_person(px, sand_line_y - 1, 0.52, color="#d4944d", name=""),
-                            svg.Text(
-                                x=px,
-                                y=label_y,
-                                text=member["people_id"],
-                                text_anchor="middle",
-                                class_="c5-member-label",
-                            ),
-                        ],
-                    )
-                )
 
         ax_y = c5_y + c5_h - 28
         els.append(svg.Line(x1=scene_x + 14, y1=ax_y, x2=scene_x + scene_w - 14, y2=ax_y, stroke="#c2ced8", stroke_width=1.2))
@@ -1022,25 +1003,16 @@ def _(
             svg.Text(
                 x=scene_x + 14,
                 y=ax_y - 8,
-                text="more tourism",
+                text="more fishing",
                 text_anchor="start",
                 class_="c5-axis-left",
             )
         )
         els.append(
             svg.Text(
-                x=border_x,
-                y=ax_y - 8,
-                text="zero",
-                text_anchor="middle",
-                class_="c5-axis-mid",
-            )
-        )
-        els.append(
-            svg.Text(
                 x=scene_x + scene_w - 14,
                 y=ax_y - 8,
-                text="more fishing",
+                text="more tourism",
                 text_anchor="end",
                 class_="c5-axis-right",
             )
@@ -1050,9 +1022,9 @@ def _(
                 x=scene_x + 14,
                 y=ax_y + 16,
                 text=(
-                    "left = more tourism visits, right = more fishing visits; click a member to update the other panels"
+                    "left = more fishing visits, right = more tourism visits; click a member to update the other panels"
                     if mode == "visits"
-                    else "left = more tourism time, right = more fishing time; click a member to update the other panels"
+                    else "left = more fishing time, right = more tourism time; click a member to update the other panels"
                 ),
                 text_anchor="start",
                 class_="c5-note",
@@ -1469,6 +1441,18 @@ def _(
                         stroke_width=(mid_r - inner_r),
                     )
                 )
+                donut_g.elements.append(
+                    svg.Text(
+                        x=cx,
+                        y=cy - (inner_r + mid_r) / 2 + 4,
+                        text=f"{pct:.0f}%",
+                        text_anchor="middle",
+                        font_size=12,
+                        fill="#ffffff",
+                        font_weight="bold",
+                        style="pointer-events:none;",
+                    )
+                )
             else:
                 donut_g = svg.G(elements=[])
                 for zone, val in z_sum.items():
@@ -1497,6 +1481,25 @@ def _(
                             data_info=seg_info,
                         )
                     )
+
+                    if pct > 4:
+                        mid_a = cur_a + swp / 2
+                        r_text = (inner_r + mid_r) / 2
+                        tx = cx + r_text * math.cos(mid_a)
+                        ty = cy + r_text * math.sin(mid_a) + 4
+                        donut_g.elements.append(
+                            svg.Text(
+                                x=tx,
+                                y=ty,
+                                text=f"{pct:.0f}%",
+                                text_anchor="middle",
+                                font_size=12,
+                                fill="#ffffff",
+                                font_weight="bold",
+                                style="pointer-events:none;",
+                            )
+                        )
+
                     cur_a += swp
             g.elements.append(donut_g)
 
@@ -1590,17 +1593,6 @@ def _(
                 svg.Text(x=cx, y=cy - 4, text=center_main, id=f"t_val_{pid_safe}", text_anchor="middle", font_size=24, font_weight="bold", fill="#22313c")
             )
             g.elements.append(svg.Text(x=cx, y=cy + 16, text=center_sub, text_anchor="middle", font_size=12, fill="#738596"))
-            g.elements.append(
-                svg.Text(
-                    x=cx,
-                    y=cy + 32,
-                    text=center_hint,
-                    text_anchor="middle",
-                    font_size=11,
-                    fill=focus_colors.get(primary_zone, "#7f8992"),
-                    font_weight="bold",
-                )
-            )
             g.elements.append(
                 svg.Text(
                     x=cx,
