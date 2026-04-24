@@ -711,8 +711,8 @@ def _(
               .c5-note { font-family: Segoe UI, Tahoma, sans-serif; font-size: 11px; fill: #738596; }
               .c5-side-note { font-family: Segoe UI, Tahoma, sans-serif; font-size: 11px; font-weight: 700; fill: #6d7e8c; }
               .c5-member-label { font-family: Segoe UI, Tahoma, sans-serif; font-size: 11px; font-weight: 700; fill: #806446; }
-              .c5-axis-left { font-family: Segoe UI, Tahoma, sans-serif; font-size: 11px; font-weight: 700; fill: #a1584f; }
-              .c5-axis-right { font-family: Segoe UI, Tahoma, sans-serif; font-size: 11px; font-weight: 700; fill: #5a7d55; }
+              .c5-axis-left { font-family: Segoe UI, Tahoma, sans-serif; font-size: 11px; font-weight: 700; fill: #2980b9; }
+              .c5-axis-right { font-family: Segoe UI, Tahoma, sans-serif; font-size: 11px; font-weight: 700; fill: #cca300; }
               .c5-axis-mid { font-family: Segoe UI, Tahoma, sans-serif; font-size: 10px; font-weight: 700; fill: #728391; }
               .c6-note { font-family: Segoe UI, Tahoma, sans-serif; font-size: 11px; fill: #738596; }
               .c6-legend { font-family: Segoe UI, Tahoma, sans-serif; font-size: 10px; fill: #667786; }
@@ -788,10 +788,10 @@ def _(
         scene_x = c5_x + 18
         scene_w = c5_w - 36
         scene_top = c5_y + 31
-        scene_h = 180
+        scene_h = 215
         scene_bottom = scene_top + scene_h
         sea_level = scene_top + 61
-        sand_line_y = scene_bottom - 14
+        sand_line_y = scene_top + 166
         border_x = scene_x + scene_w - ((0 - min_d) / range_d) * scene_w
 
         members = []
@@ -995,7 +995,7 @@ def _(
                         )
                     )
 
-        ax_y = c5_y + c5_h - 28
+        ax_y = c5_y + c5_h - 30
         els.append(svg.Line(x1=scene_x + 14, y1=ax_y, x2=scene_x + scene_w - 14, y2=ax_y, stroke="#c2ced8", stroke_width=1.2))
         for tick_x in [scene_x + 14, border_x, scene_x + scene_w - 14]:
             els.append(svg.Line(x1=tick_x, y1=ax_y - 4, x2=tick_x, y2=ax_y + 4, stroke="#aebbc5", stroke_width=1))
@@ -1801,13 +1801,15 @@ def _(
                 applyZoom();
             }
 
-            mapShell.addEventListener('wheel', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                const { x: focusX, y: focusY } = eventPoint(e);
-                if (focusX < bx || focusX > bx + bw || focusY < by || focusY > by + bh) return;
-                zoomAt(e.deltaY < 0 ? 1.18 : 1 / 1.18, focusX, focusY);
-            }, { passive: false });
+            [mapShell, mapBg].forEach(el => {
+                el.addEventListener('wheel', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const { x: focusX, y: focusY } = eventPoint(e);
+                    if (focusX < bx || focusX > bx + bw || focusY < by || focusY > by + bh) return;
+                    zoomAt(e.deltaY < 0 ? 1.18 : 1 / 1.18, focusX, focusY);
+                }, { passive: false });
+            });
 
             svgRoot.addEventListener('mousedown', (e) => {
                 if (scale <= 1) return;
