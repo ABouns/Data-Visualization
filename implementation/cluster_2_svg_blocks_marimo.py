@@ -292,7 +292,7 @@ def _(mo, pd, time_trip_spend):
     unique_dates = pd.to_datetime(time_trip_spend["date"]).sort_values().unique()
     num_days = len(unique_dates)
 
-    knn_dist_slider = mo.ui.slider(start=0, stop=5, step=0.1, value=1.5, show_value=True)
+    knn_dist_slider = mo.ui.slider(start=0, stop=5, step=0.1, value=1, show_value=True)
     knn_num_slider = mo.ui.slider(start=0, stop=10, step=1, value=5, show_value=True)
     mode_dropdown = mo.ui.dropdown(options=["time_spend", "visits"], value="visits")
     show_others = mo.ui.checkbox(value=False, label="Show 'Others'")
@@ -1536,12 +1536,23 @@ def _(
                     date_string = row["date"].strftime("%Y-%m-%d") if hasattr(row["date"], "strftime") else str(row["date"])
 
                     date_info = f"Trip Details | ID: {row['trip_id']} | Date: {date_string} | Total: {fmt(t_val)}"
-                    trip_g = svg.G(elements=[])
+
+                    # Build focus summary for the whole trip
+                    focus_summary_parts = []
+                    for zone in categories:
+                        v = row.get(zone, 0)
+                        if v > 0:
+                            p = (v / t_val) * 100 if t_val > 0 else 0
+                            focus_summary_parts.append(f"{zone.capitalize()}: {fmt(v)} ({p:.1f}%)")
+
+                    shared_info = f"{date_info} | {' | '.join(focus_summary_parts)}"
+
+                    trip_els = []
                     sep_x1 = cx + (base_r - 4) * math.cos(ang_b)
                     sep_y1 = cy + (base_r - 4) * math.sin(ang_b)
                     sep_x2 = cx + (outer_r + 4) * math.cos(ang_b)
                     sep_y2 = cy + (outer_r + 4) * math.sin(ang_b)
-                    trip_g.elements.append(
+                    trip_els.append(
                         svg.Line(
                             x1=sep_x1,
                             y1=sep_y1,
@@ -1563,21 +1574,17 @@ def _(
                         x3, y3 = cx + (cur_br + h_v) * math.cos(ang_b + slice_span), cy + (cur_br + h_v) * math.sin(ang_b + slice_span)
                         x4, y4 = cx + (cur_br + h_v) * math.cos(ang_b), cy + (cur_br + h_v) * math.sin(ang_b)
 
-                        z_info = f"{date_info} | Focus: {zone.capitalize()} | Value: {fmt(val)}"
-                        trip_g.elements.append(
-                            DataPolygon(
+                        trip_els.append(
+                            svg.Polygon(
                                 points=f"{x1},{y1} {x2},{y2} {x3},{y3} {x4},{y4}",
                                 fill=focus_colors.get(zone, "#ccc"),
                                 opacity=0.84,
                                 stroke="#ffffff",
                                 stroke_width=0.8,
-                                class_="c7-segment",
-                                style="cursor:pointer",
-                                data_info=z_info,
                             )
                         )
                         cur_br += h_v
-                    g.elements.append(trip_g)
+                    g.elements.append(DataG(elements=trip_els, class_="c7-segment", style="cursor:pointer", data_info=shared_info))
 
             g.elements.append(
                 svg.Circle(
